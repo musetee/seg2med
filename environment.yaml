@@ -1,0 +1,36 @@
+name: seg2med
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python==3.10
+  - pytorch==2.4.1
+  - cudatoolkit==11.8
+  - torchvision==0.19.1
+  - torchaudio==2.4.1
+  - pytorch-cuda=11.8
+  - pip
+  - pip:
+    - totalsegmentator
+    - monai-generative
+    - monai
+    - tqdm
+    - opencv-python
+    - charset-normalizer==3.3.2
+    - pynrrd
+    - torchmetrics
+    - pyyaml
+    - streamlit
+    - openpyxl
+    - tifffile
+    - pydicom>=2.4
+  # pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu118
+   # conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+   # conda install nvidia/label/cuda-12.4.0::cuda-toolkit
+   # conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 pytorch-cuda=12.4 -c pytorch -c nvidia
+  # conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1  pytorch-cuda=11.8 -c pytorch -c nvidia
+  # pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu118
+   # AttributeError: partially initialized module 'charset_normalizer' has no attribute 'md__mypyc' (most likely due to a circular import):
+   # pip install -U --force-reinstall charset-normalizer

@@ -1,0 +1,29 @@
+# python prepare_case.py --config configs/prepare_case.yaml
+case:
+  - id: '1PA001'
+    dataset: synthrad_mr_t1
+    modality_name: mr_t1_gre
+    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA001\mr.nii.gz
+  - id: '1PA004'
+    dataset: synthrad_mr_t1
+    modality_name: mr_t1_gre
+    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA004\mr.nii.gz
+  - id: '1PA001'
+    dataset: synthrad_ct
+    modality_name: ct
+    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA001\ct.nii.gz
+  - id: '1PA004'
+    dataset: synthrad_ct
+    modality_name: ct
+    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA004\ct.nii.gz
+
+overwrite_seg: false
+overwrite_prior: false
+# True reruns the corresponding step; defaults reuse existing files.
+# absolute_paths: true
+segmentation:
+  device: cuda:2
+  fast: false
+# prior:
+#   min_contour_area: 10000
+#   body_threshold: null

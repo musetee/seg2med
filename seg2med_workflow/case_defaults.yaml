@@ -1,0 +1,13 @@
+# Shared defaults for prepare_case.py; paths and metadata belong in the case YAML.
+overwrite_seg: false
+overwrite_prior: false
+absolute_paths: true
+segmentation:
+  ct_tasks: [total, tissue_types]
+  mr_tasks: [total_mr, tissue_types_mr]
+  device: cuda # translated to TotalSegmentator's "gpu" API spelling
+  multi_label: true
+  fast: false
+prior:
+  min_contour_area: 10000
+  body_threshold: null # use PhysioSynth's modality-specific default

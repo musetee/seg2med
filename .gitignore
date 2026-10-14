@@ -1,0 +1,26 @@
+!.gitignore
+/logs
+__pycache__*
+/*pycache*
+/model/*pycache*
+**/*pycache*
+*.out
+venv*
+helix_log
+checkpoints
+MONAI
+*.svg
+data
+generative-models
+mamba_dependencies
+ControlNet
+*.xlsx
+*.tex
+*.html
+*.png
+# Keep README gallery assets publishable while ignoring other generated PNGs.
+!/figures/**/*.png
+archiv
+.vscode
+.pytest_cache
+.agents
