@@ -15,7 +15,8 @@ python -m seg2med_train.train --config configs/test_ddpm_mr256.yaml
 
 Edit the input paths, device, and checkpoint settings below before running them.
 Preparation accepts `.nii` and `.nii.gz` volumes. Inference requires a compatible
-trained checkpoint; checkpoints and datasets are not bundled with this quick start.
+trained checkpoint; download the available 256×256 models linked below. Datasets
+and checkpoint files are not bundled in this repository.
 
 ## Installation
 
@@ -117,6 +118,13 @@ working directory. Manifest paths are absolute by default. If you use
 so its relative image paths can be resolved.
 
 ## Step 2 — Generate images with a trained model
+
+### Pretrained checkpoints
+
+- **256×256 CT, T1-weighted MR, and T2-weighted MR checkpoints — [Download on Hugging Face](https://huggingface.co/Zeyu0601/seg2med_model/tree/main)**. Downsampled models for fast inference.
+- **512×512 CT, T1-weighted MR, and T2-weighted MR checkpoints — Coming soon.**
+
+Download a checkpoint and set `ckpt_path` to its local path in the inference YAML.
 
 Use [test_ddpm_mr256.yaml](configs/test_ddpm_mr256.yaml) for the MR example or
 [test_ddpm_ct256.yaml](configs/test_ddpm_ct256.yaml) for the CT example.
