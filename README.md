@@ -2,6 +2,8 @@
 
 **Segmentation-guided CT/MR image synthesis with physics-informed image priors.**
 
+![seg2med workflow: segmentation, physics-informed priors, and CT/MR image synthesis](figures/workflow.png)
+
 Starting from a CT or MR volume, seg2med creates organ/tissue segmentations,
 simulates an image prior with PhysioSynth, and uses that prior to condition a
 trained diffusion model. The simplest workflow has two commands:
