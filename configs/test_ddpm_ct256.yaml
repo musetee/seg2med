@@ -3,14 +3,14 @@
 
 model_name: 'ddpm2d_seg2med' # ddpm2d_seg2med_multimodal
 dataset_name: image_prior_csv # or semantic_prior_csv
-ckpt_path: E:\Projects\yang_proj\seg2med\logs\2025_10_seg2med_4models_abl\prior_group\train_ddpm2d_seg2med_ct_abl_prior2_batch8\saved_models\best.pt
+ckpt_path: /absolute/path/to/ckpt.pt
 GPU_ID: [2]
 mode: 'test'
 dataset:
   data_dir: 'F:\yang_data\seg2med_datasets'
   train_csv: null
   val_csv: null
-  test_csv: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA001\ct_priors.csv
+  test_csv: /absolute/path/to/synthrad/tutorials/1PA001/ct_priors.csv
   batch_size: 16
   val_batch_size: 1
   normalize: 'scale2000'

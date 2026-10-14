@@ -3,19 +3,19 @@ case:
   - id: '1PA001'
     dataset: synthrad_mr_t1
     modality_name: mr_t1_gre
-    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA001\mr.nii.gz
+    img: /absolute/path/to\1PA001\mr.nii.gz
   - id: '1PA004'
     dataset: synthrad_mr_t1
     modality_name: mr_t1_gre
-    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA004\mr.nii.gz
+    img: /absolute/path/to\1PA004\mr.nii.gz
   - id: '1PA001'
     dataset: synthrad_ct
     modality_name: ct
-    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA001\ct.nii.gz
+    img: /absolute/path/to\1PA001\ct.nii.gz
   - id: '1PA004'
     dataset: synthrad_ct
     modality_name: ct
-    img: F:\yang_data\seg2med_datasets\synthrad\tutorial\1PA004\ct.nii.gz
+    img: /absolute/path/to\1PA004\ct.nii.gz
 
 overwrite_seg: false
 overwrite_prior: false

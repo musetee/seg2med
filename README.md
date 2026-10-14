@@ -278,3 +278,28 @@ examples are not a quantitative performance evaluation.
 
 For research use. Confirm data-sharing permissions and anonymization before
 redistributing images, manifests, or model checkpoints.
+
+## Citation
+
+Please cite the following paper and star this project if you use this repository
+in your research. Thank you!
+
+Zeyu Yang et al. **seg2med: a bridge from artificial anatomy to multimodal medical
+images.** *Physics in Medicine & Biology*, 70(24), 245015 (2025).
+[Read the paper](https://doi.org/10.1088/1361-6560/ae2738).
+
+```bibtex
+@article{Yang_2025,
+  doi = {10.1088/1361-6560/ae2738},
+  url = {https://doi.org/10.1088/1361-6560/ae2738},
+  year = {2025},
+  month = {dec},
+  publisher = {IOP Publishing},
+  volume = {70},
+  number = {24},
+  pages = {245015},
+  author = {Yang, Zeyu and Chen, Zhilin and Sun, Yipeng and Strittmatter, Anika and Raj, Anish and Allababidi, Ahmad and Rink, Johann S and Zöllner, Frank G},
+  title = {seg2med: a bridge from artificial anatomy to multimodal medical images},
+  journal = {Physics in Medicine & Biology}
+}
+```
