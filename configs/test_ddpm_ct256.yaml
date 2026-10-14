@@ -7,7 +7,7 @@ ckpt_path: /absolute/path/to/ckpt.pt
 GPU_ID: [2]
 mode: 'test'
 dataset:
-  data_dir: 'F:\yang_data\seg2med_datasets'
+  data_dir: '/absolute/path/to/seg2med_datasets'
   train_csv: null
   val_csv: null
   test_csv: /absolute/path/to/synthrad/tutorials/1PA001/ct_priors.csv
