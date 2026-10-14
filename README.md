@@ -289,6 +289,14 @@ examples are not a quantitative performance evaluation.
 For research use. Confirm data-sharing permissions and anonymization before
 redistributing images, manifests, or model checkpoints.
 
+## License
+
+Unless otherwise noted, original code in this repository is licensed under the
+[MIT License](LICENSE). Third-party components retain their own licenses and
+copyright notices, including those in individual subdirectories. Datasets and
+model checkpoints may have separate terms; the code license does not override
+those terms.
+
 ## Citation
 
 Please cite the following paper and star this project if you use this repository
