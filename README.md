@@ -182,6 +182,19 @@ TIFF volumes are always saved. Exports contain model-space image values; DICOM
 exports are derived secondary-capture series, not reconstructed acquisition
 metadata. Inspect preprocessing and output geometry for your research task.
 
+## Additional Applications
+
+## Modality Conversion for Image Priors
+Using the segmentation files we can generate image priors of multiple modalities, which can be used to generate registrated multi-modal medical images
+
+to be updated...
+
+## Using Digital Phantoms for Image Priors
+
+We can also get segmentation files from XCAT Digital Phantoms and create virtual image priors, then use them for generating images
+
+to be updated...
+
 ## Available modalities
 
 Use a name as `modality_name` in the preparation YAML, or its integer ID as
