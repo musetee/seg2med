@@ -124,7 +124,7 @@ so its relative image paths can be resolved.
 ### Pretrained checkpoints
 
 - **256×256 CT, T1-weighted MR, and T2-weighted MR checkpoints — [Download on Hugging Face](https://huggingface.co/Zeyu0601/seg2med_model/tree/main)**. Downsampled models for fast inference.
-- **512×512 CT, T1-weighted MR, and T2-weighted MR checkpoints — Coming soon.**
+- **512×512 CT, T1-weighted MR, and T2-weighted MR checkpoints — [Download on Hugging Face](https://huggingface.co/Zeyu0601/seg2med_model/tree/main)**. Downsampled models for better quality.
 
 Download a checkpoint and set `ckpt_path` to its local path in the inference YAML.
 
