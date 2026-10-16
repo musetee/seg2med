@@ -1,5 +1,7 @@
 # seg2med
 
+[![Hugging Face Demo](https://img.shields.io/badge/🤗%20Hugging%20Face-Try%20the%20Demo-yellow)](https://huggingface.co/spaces/Zeyu0601/seg2med-demo)
+
 **Segmentation-guided CT/MR image synthesis with physics-informed image priors.**
 
 ![seg2med workflow: segmentation, physics-informed priors, and CT/MR image synthesis](figures/workflow.png)
