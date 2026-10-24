@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seg2med"
+version = "0.2.0"
+description = "Segmentation-guided medical image synthesis: TotalSegmentator -> PhysioSynth priors -> conditional DDPM"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+# torch / torchvision are installed separately for the local CUDA version (see environment.yaml).
+dependencies = [
+    "monai",
+    "monai-generative",
+    "numpy",
+    "pandas",
+    "nibabel",
+    "pyyaml",
+    "yacs",
+    "tqdm",
+    "opencv-python",
+    "pydicom>=2.4",
+    "torchmetrics",
+    "matplotlib",
+    "SimpleITK",
+    "scikit-image",
+    "scikit-learn",
+    "pynrrd",
+    "tifffile",
+    "imageio",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+segmentation = ["totalsegmentator"]
+# legacy GAN baselines (pix2pix / CycleGAN) visualisation
+gan = ["visdom", "dominate", "wandb"]
+
+[tool.setuptools]
+py-modules = ["prepare_case"]
+
+[tool.setuptools.packages.find]
+include = ["seg2med_*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.csv", "*.yaml", "*.yml", "*.md", "LICENSE"]
