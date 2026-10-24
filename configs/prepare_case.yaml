@@ -2,25 +2,36 @@
 case:
   - id: '1PA001'
     dataset: synthrad_mr_t1
-    modality_name: mr_t1_gre
-    img: /absolute/path/to\1PA001\mr.nii.gz
+    input_modality_name: mr_t1_gre
+    img: /absolute/path/to/1PA001/mr.nii.gz
   - id: '1PA004'
     dataset: synthrad_mr_t1
-    modality_name: mr_t1_gre
-    img: /absolute/path/to\1PA004\mr.nii.gz
+    input_modality_name: mr_t1_gre
+    img: /absolute/path/to/1PA004/mr.nii.gz
   - id: '1PA001'
     dataset: synthrad_ct
-    modality_name: ct
-    img: /absolute/path/to\1PA001\ct.nii.gz
+    input_modality_name: ct
+    img: /absolute/path/to/1PA001/ct.nii.gz
   - id: '1PA004'
     dataset: synthrad_ct
-    modality_name: ct
-    img: /absolute/path/to\1PA004\ct.nii.gz
+    input_modality_name: ct
+    img: /absolute/path/to/1PA004/ct.nii.gz
 
+# target_modality_name: ct   # simulated prior modality; defaults to each case's input modality
 overwrite_seg: false
 overwrite_prior: false
-# True reruns the corresponding step; defaults reuse existing files.
-# absolute_paths: true
+segmentation_label_scheme: auto # read each mask's embedded label dictionary
+prior_label_scheme: legacy
+# explanations
+# segmentation_label_scheme: the way segmentation labels are interpreted. Options:
+#   - auto: read each mask's embedded label dictionary (default)
+#   - legacy: use the legacy label scheme of totalsegmentator old version
+#   - current: use the current label scheme of totalsegmentator new version
+# prior_label_scheme: the way semantic label numbers are produced and saved. This will not influence the image prior generation, because the final signal values are produced by the anatomical organ types. Options:
+#   - legacy: use the legacy label scheme of totalsegmentator old version
+#   - current: use the current label scheme of totalsegmentator new version
+
+# absolute_paths: true # True reruns the corresponding step; defaults reuse existing files.
 segmentation:
   device: cuda:2
   fast: false

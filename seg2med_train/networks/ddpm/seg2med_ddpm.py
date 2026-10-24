@@ -18,6 +18,17 @@ from ...networks.basefunc import LossTracker, EarlyStopping
 from ...networks.model_registry import register_model
 from ...Dataloader import patch_2d_from_single_volume, decode_dataset_from_single_volume_batch 
 from ...slice_export import InferenceSliceWriter
+from .seeded_sampling import NoiseStreams, seeded_sample
+
+
+def _file_sha256(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 if hasattr(torch, 'amp'):
@@ -317,6 +328,7 @@ def generate_noise(noise_type, targets, device):
     return noise
 
 class DiffusionModel: #(nn.Module)
+    conditioning_channels = 1
     def __init__(self,config,paths,train_loader,val_loader, train_patient_IDs, test_patient_IDs):
         self.config=config
         self.is_ddp = self.config.is_ddp
@@ -346,7 +358,7 @@ class DiffusionModel: #(nn.Module)
         cross_attention_dim = 1 if self.with_conditioning else None
         self.model_raw = DiffusionModelUNet(
             spatial_dims=spatial_dims,
-            in_channels=2,
+            in_channels=1 + self.conditioning_channels,
             out_channels=1,
             num_res_blocks= self.config.ddpm.num_res_units, # 2
             num_channels= self.config.ddpm.num_channels,
@@ -401,6 +413,7 @@ class DiffusionModel: #(nn.Module)
         from .training import load_checkpoint
 
         self.init_epoch = self.init_step = 0
+        self.loaded_weights = self.loaded_ckpt_sha256 = None
         path = self.config.ckpt_path
         if not path or str(path).lower() in {"none", "null"}:
             if self.config.mode == "train" and self.config.train.resume:
@@ -409,7 +422,17 @@ class DiffusionModel: #(nn.Module)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Checkpoint does not exist: {path}")
         loaded = load_checkpoint(path, self.device)
+        self.loaded_ckpt_sha256 = _file_sha256(path)
+        self.export_preprocessing = loaded.get("preprocessing", {})
         state = loaded.get("model", loaded.get("state_dict", loaded))
+        # Sampling uses the averaged weights; training (fresh or resumed) starts
+        # from the raw weights, and the trainer restores its own EMA copy.
+        use_ema = "ema_model" in loaded and self.config.mode != "train" and self.config.ddpm.use_ema
+        if use_ema:
+            state = loaded["ema_model"]
+        self.loaded_weights = "EMA" if use_ema else "raw"
+        print(f"Checkpoint weights: {'EMA' if use_ema else 'raw'}"
+              f"{'' if 'ema_model' in loaded else ' (checkpoint has no EMA weights)'}")
         while state and all(key.startswith(("module.", "_orig_mod.")) for key in state):
             state = {key.split(".", 1)[1]: value for key, value in state.items()}
         self.model.load_state_dict(state)
@@ -478,6 +501,22 @@ class DiffusionModel: #(nn.Module)
 
     def prepare_model_input(self, source):
         return source
+
+    def initial_noise(self, targets):
+        """Per-slice noise, or one noise image shared by all slices of a volume.
+
+        val() resets the shared noise for every volume. Sharing removes one
+        source of independent slice-to-slice intensity variation.
+        """
+        if not self.config.validation.shared_volume_noise:
+            return generate_noise(self.config.ddpm.noise_type, targets, self.device)
+        shape = (1, *targets.shape[1:])
+        if getattr(self, "volume_noise", None) is None or tuple(self.volume_noise.shape) != shape:
+            self.volume_noise = generate_noise(self.config.ddpm.noise_type, targets[:1], self.device)
+        return self.volume_noise.expand_as(targets).contiguous()
+
+    def prepare_conditioning(self, source, batch):
+        return self.prepare_model_input(source)
     
     def model_inferer_predict(self, targets, sources, model, noise, timesteps, condition):
         return self.inferer(inputs=targets, append_image=sources, diffusion_model=model, noise=noise, timesteps=timesteps, condition=condition)
@@ -626,6 +665,8 @@ class DiffusionModel: #(nn.Module)
         self.dpi = 100
 
     def val(self):
+        from ...export_intensity import MedicalIntensityExport
+
         pretrained_path = self.config.ckpt_path
         if self.config.mode=='test':
             self.init_diffusion()
@@ -642,6 +683,18 @@ class DiffusionModel: #(nn.Module)
         else:
             print('validation only for test or train mode')
 
+        # init_diffusion above loads checkpoint preprocessing before export setup.
+        dicom_intensity = None
+        if getattr(self.config.validation, "save_dicom", False):
+            dicom_intensity = MedicalIntensityExport(
+                preprocessing=(getattr(self, "export_preprocessing", {})
+                               if self.config.mode != "train" else None),
+                normalize_source=self.config.dataset_name != "semantic_prior_csv",
+                normalizer=self.normalizer() if hasattr(self, "normalizer") else None,
+            )
+        seeded = self.config.validation.seeded_sampling
+        if seeded.enabled:
+            self._check_seeded_sampling()
         self.set_inference_parameters()
         self.saved_logs_name=self.output_path.replace('results','datalogs')
         self.model.eval()
@@ -664,14 +717,22 @@ class DiffusionModel: #(nn.Module)
                 debatched_volume = {key: value[patient_index] for key, value in volume_batch.items()}
                 patient_id = debatched_volume['patient_ID']
                 modality = debatched_volume['modality'].item()
+                has_target = bool(debatched_volume.get("has_target", True))
                 volume_start_step = total_step
-                collected = {"input": [], "target": [], "output": []}
+                self.volume_noise = None
+                self.noise_streams = self._noise_streams(debatched_volume) if seeded.enabled else None
+                next_slice = 0
+                collected = {"input": [], "target": [], "output": [], **{key: [] for key in self.keys[2:]}}
                 slice_writer = InferenceSliceWriter(
                     patient_id=patient_id, modality=modality, epoch=self.epoch,
                     step=volume_start_step, img_folder=self.img_folder, npy_folder=self.npy_folder,
                     save_png=getattr(self.config.validation, "save_png", False),
                     save_npz=getattr(self.config.validation, "save_npz", False),
                     save_dicom=getattr(self.config.validation, "save_dicom", False),
+                    dicom_intensity=dicom_intensity,
+                    save_target=has_target,
+                    # Extra conditioning inputs (e.g. a lesion mask) are exported too.
+                    extra_labels=self.keys[2:],
                 )
 
                 volume_dataset = monai.data.Dataset([debatched_volume])
@@ -686,40 +747,103 @@ class DiffusionModel: #(nn.Module)
                         self.config.mode == 'test'
                         or self.config.train.sample_range_lower <= step <= self.config.train.sample_range_upper
                     )
+                    depth = batch[self.config.dataset.indicator_A].shape[0]
                     if selected:
-                        outputs_batch = self._sample(batch=batch)
+                        if self.noise_streams is not None:
+                            outputs_batch = self._sample(batch=batch, z_indices=list(range(next_slice, next_slice + depth)))
+                        else:
+                            outputs_batch = self._sample(batch=batch)
                         slice_writer.save_batch(
                             batch[self.config.dataset.indicator_A],
                             batch[self.config.dataset.indicator_B], outputs_batch,
+                            extras={key: batch[key] for key in self.keys[2:]},
                         )
                         collected["input"].append(batch[self.config.dataset.indicator_A].detach().cpu())
                         collected["target"].append(batch[self.config.dataset.indicator_B].detach().cpu())
                         collected["output"].append(outputs_batch.detach().cpu())
+                        for key in self.keys[2:]:
+                            collected[key].append(batch[key].detach().cpu())
+                    next_slice += depth
                     total_step += 1
 
+                if self.noise_streams is not None:
+                    self._save_seeded_volume(debatched_volume, collected, next_slice)
                 if collected["output"]:
                     # (D, C, H, W) -> (1, C, H, W, D), preserving slice order.
                     volumes = {
-                        key: torch.cat(batches, dim=0).permute(1, 2, 3, 0).unsqueeze(0)
-                        for key, batches in collected.items()
+                        key: torch.cat(collected[key], dim=0).permute(1, 2, 3, 0).unsqueeze(0)
+                        for key in ("input", "target", "output")
                     }
                     output_sample_results(
                         volumes["input"], volumes["target"], [patient_id],
                         volumes["output"], modality, self.epoch, volume_start_step,
                         self.img_folder, self.npy_folder,
+                        save_target=has_target,
                     )
 
 
-    def _sample(self, 
-                batch):
+    def _check_seeded_sampling(self):
+        seeded = self.config.validation.seeded_sampling
+        if self.config.mode != "test":
+            raise ValueError("validation.seeded_sampling is only supported in test mode.")
+        if self.config.ddpm.noise_type != "normal":
+            raise ValueError("validation.seeded_sampling requires ddpm.noise_type: normal.")
+        if not seeded.namespace or seeded.seed_label in (None, ""):
+            raise ValueError("validation.seeded_sampling requires namespace and seed_label.")
+        if not isinstance(self.scheduler, DDPMScheduler) or type(self)._sample is not DiffusionModel._sample:
+            raise ValueError("validation.seeded_sampling supports the 2D DDPM sampler only.")
+
+    def _noise_streams(self, volume):
+        # patient_key is "<dataset>:<patient_id>"; the manifest patient_id keeps leading zeros.
+        patient_key = str(volume.get("patient_key", volume["patient_ID"]))
+        seeded = self.config.validation.seeded_sampling
+        return NoiseStreams(str(seeded.namespace), patient_key.split(":", 1)[-1], volume["patient_ID"],
+                            str(seeded.seed_label), shared=self.config.validation.shared_volume_noise)
+
+    def _save_seeded_volume(self, volume, collected, depth):
+        """Float32 (D, H, W) arrays in model space plus the sampling record."""
+        import json
+
+        folder = os.path.join(os.path.dirname(self.img_folder), "volumes")
+        os.makedirs(folder, exist_ok=True)
+        arrays = {key: torch.cat(batches)[:, 0].numpy().astype(np.float32)
+                  for key, batches in collected.items() if batches}
+        name = str(volume["patient_ID"])
+        np.savez_compressed(os.path.join(folder, f"{name}.npz"), **arrays)
+        streams = self.noise_streams
+        record = {
+            "namespace": streams.prefix[0], "patient_id": streams.volume[0], "volume_id": streams.volume[1],
+            "seed_label": streams.volume[2], "strategy": "shared" if streams.shared else "independent",
+            "shared_init_z": streams.shared_z if streams.shared else None,
+            "z_indices": list(range(depth)), "array_layout": "(z, H, W) = NIfTI array transposed (2, 0, 1)",
+            "sampler": type(self.scheduler).__name__, "num_train_timesteps": self.num_train_timesteps,
+            "num_inference_steps": self.num_inference_steps,
+            "precision": "network forward under autocast; initial/step noise and scheduler.step in float32",
+            "seed_rule": "sha256(utf-8 '|'.join(parts))[:8] big-endian mod 2**63; "
+                         "init parts (namespace,'init',patient,volume,seed_label,z); "
+                         "step parts (namespace,'step',patient,volume,seed_label,z,t)",
+            "ckpt_path": str(self.config.ckpt_path), "epoch": self.epoch,
+            "ckpt_sha256": getattr(self, "loaded_ckpt_sha256", None),
+            "weights": getattr(self, "loaded_weights", None),
+            "use_ema": bool(getattr(self.config.ddpm, "use_ema", False)),
+            "val_batch_size": self.config.dataset.val_batch_size, "device": str(self.device),
+            "source_paths": {"input": str(volume.get("A_paths", "")), "target": str(volume.get("B_paths", ""))},
+        }
+        with open(os.path.join(folder, f"{name}.json"), "w", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2)
+
+    def _sample(self,
+                batch, z_indices=None):
         # Sampling
         # targets: CT image, which is  the target
         # inputs: MRI image, which is to be converted to CT image
-        
+
         self.targets_batch = batch[self.config.dataset.indicator_B].to(self.device) # CT image
         self.inputs_batch = batch[self.config.dataset.indicator_A].to(self.device) # MRI image
-        self.inputs_batch_prepared = self.prepare_model_input(self.inputs_batch) # one hot processing if needed
-        self.noise = generate_noise(self.config.ddpm.noise_type, self.targets_batch, self.device)
+        self.inputs_batch_prepared = self.prepare_conditioning(self.inputs_batch, batch)
+        seeded = z_indices is not None
+        if not seeded:
+            self.noise = self.initial_noise(self.targets_batch)
         self.scheduler.set_timesteps(num_inference_steps=self.num_inference_steps)
         if self.with_conditioning:
             if self.manual_aorta_diss >= 0:
@@ -734,12 +858,19 @@ class DiffusionModel: #(nn.Module)
                 Aorta_diss = batch['Aorta_diss'].unsqueeze(-1).unsqueeze(-1).to(torch.float32).to(self.device)
         else:
             Aorta_diss = None
-        with autocast(**autocast_kwargs):
-            outputs_batch, self.intermediates = self.model_inferer_sample(Aorta_diss)
-        self.mse_loss = F.mse_loss(outputs_batch, self.targets_batch)
+        if seeded:
+            outputs_batch = seeded_sample(self.model, self.scheduler, self.inputs_batch_prepared,
+                                          self.noise_streams, z_indices, context=Aorta_diss,
+                                          forward_context=lambda: autocast(**autocast_kwargs))
+            self.intermediates = None
+        else:
+            with autocast(**autocast_kwargs):
+                outputs_batch, self.intermediates = self.model_inferer_sample(Aorta_diss)
+        self.mse_loss = (F.mse_loss(outputs_batch, self.targets_batch)
+                         if bool(torch.as_tensor(batch.get("has_target", True)).all()) else None)
         self.targets_batch  = self.targets_batch.detach().cpu()
         self.inputs_batch = self.inputs_batch.detach().cpu()
-        outputs_batch = outputs_batch.detach().cpu()   
+        outputs_batch = outputs_batch.detach().cpu()
         return outputs_batch
 
 class DiffusionModel_multimodal(DiffusionModel): #(nn.Module)
@@ -962,13 +1093,14 @@ class DiffusionModel_multimodal(DiffusionModel): #(nn.Module)
         self.targets_batch = batch[self.config.dataset.indicator_B].to(self.device) # CT image
         self.inputs_batch = batch[self.config.dataset.indicator_A].to(self.device) # MRI image
         self.inputs_batch_prepared = self.prepare_model_input(self.inputs_batch) # one hot processing if needed
-        self.noise = generate_noise(self.config.ddpm.noise_type, self.targets_batch, self.device)
+        self.noise = self.initial_noise(self.targets_batch)
         self.scheduler.set_timesteps(num_inference_steps=self.num_inference_steps)
         condition = self._get_modality_condition(batch)
 
         with autocast(**autocast_kwargs):
             outputs_batch, self.intermediates = self.model_inferer_sample(condition)
-        self.mse_loss = F.mse_loss(outputs_batch, self.targets_batch)
+        self.mse_loss = (F.mse_loss(outputs_batch, self.targets_batch)
+                         if bool(torch.as_tensor(batch.get("has_target", True)).all()) else None)
         self.targets_batch  = self.targets_batch.detach().cpu()
         self.inputs_batch = self.inputs_batch.detach().cpu()
         outputs_batch = outputs_batch.detach().cpu()   

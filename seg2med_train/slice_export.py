@@ -9,8 +9,17 @@ from .dicom_export import save_dicom_series
 
 class InferenceSliceWriter:
     def __init__(self, *, patient_id, modality, epoch, step, img_folder,
-                 npy_folder=None, save_png=False, save_npz=False, save_dicom=False):
+                 npy_folder=None, save_png=False, save_npz=False, save_dicom=False,
+                 dicom_intensity=None, save_target=True, extra_labels=()):
         self.patient_id = patient_id
+        self.modality = modality
+        self.dicom_intensity = dicom_intensity
+        self.save_target = save_target
+        # Additional model inputs (e.g. lesion_mask) exported as their own series.
+        # They are label maps: written with raw values, never intensity-restored.
+        self.extra_labels = tuple(extra_labels)
+        if {"input", "output", "target"} & set(self.extra_labels):
+            raise ValueError("extra_labels must not reuse input/output/target.")
         self.prefix = f"epoch_{epoch}_{patient_id}_modality_{modality}_step_{step}"
         self.img_folder = Path(img_folder)
         self.dicom_folder = self.img_folder.parent / "dicom"
@@ -27,20 +36,27 @@ class InferenceSliceWriter:
             except ImportError as error:
                 raise ImportError("DICOM export requires pydicom. Install it with 'pip install pydicom'.") from error
             self.study_uid = generate_uid()
-            self.series_uids = {label: generate_uid() for label in ("input", "output", "target")}
+            self.series_uids = {label: generate_uid() for label in ("input", "output", "target", *self.extra_labels)}
+        self.series_numbers = {"input": 1, "output": 2, "target": 3,
+                               **{label: 4 + index for index, label in enumerate(self.extra_labels)}}
 
-    def save_batch(self, inputs, targets, outputs):
+    def save_batch(self, inputs, targets, outputs, extras=None):
         """Write completed (slices, channels, X, Y) batches before inference resumes."""
         if not (self.save_png or self.save_npz or self.save_dicom):
             return
+        extras = extras or {}
+        if set(extras) != set(self.extra_labels):
+            raise ValueError(f"Expected extra slices for {list(self.extra_labels)}, got {sorted(extras)}.")
         arrays = {}
-        for label, tensor in (("input", inputs), ("target", targets), ("output", outputs)):
+        for label, tensor in (("input", inputs), ("target", targets), ("output", outputs), *extras.items()):
+            if label == "target" and not self.save_target:
+                continue
             array = tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else np.asarray(tensor)
             if array.ndim != 4 or array.shape[1] != 1:
                 raise ValueError(f"Expected single-channel slice batch for {label}, got {array.shape}.")
             arrays[label] = array[:, 0]
         if len({array.shape for array in arrays.values()}) != 1:
-            raise ValueError("Input, target, and output slice batches must have matching shapes.")
+            raise ValueError("Input, target, output and extra slice batches must have matching shapes.")
 
         for label, array in arrays.items():
             for index, plane in enumerate(array):
@@ -55,10 +71,14 @@ class InferenceSliceWriter:
                     folder.mkdir(parents=True, exist_ok=True)
                     np.savez_compressed(folder / f"{prefix}.npz", **{label: plane})
             if self.save_dicom:
+                dicom_array, units = (self.dicom_intensity(array, label, self.modality)
+                                      if self.dicom_intensity is not None and label not in self.extra_labels
+                                      else (array, "US"))
                 save_dicom_series(
-                    array.transpose(0, 2, 1), self.dicom_folder / label / self.prefix,
+                    dicom_array.transpose(0, 2, 1), self.dicom_folder / label / self.prefix,
                     patient_id=self.patient_id, label=label, study_uid=self.study_uid,
-                    series_number={"input": 1, "output": 2, "target": 3}[label],
+                    series_number=self.series_numbers[label],
                     series_uid=self.series_uids[label], instance_start=self.next_slice,
+                    rescale_type=units,
                 )
         self.next_slice += arrays["output"].shape[0]

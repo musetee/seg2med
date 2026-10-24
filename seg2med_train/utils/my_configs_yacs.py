@@ -27,6 +27,8 @@ def init_cfg(yaml_file=None):
     cfg.dataset.train_csv = ""
     cfg.dataset.val_csv = ""
     cfg.dataset.test_csv = ""
+    cfg.dataset.case = [] # Inference-only manual priors; root-level case is an alias.
+    cfg.dataset.modality_name = None # Default modality for manual cases, never guessed.
     cfg.dataset.patient_id_regex = "" # Optional regex on CSV IDs; capture patient_id or group 1.
     cfg.dataset.ct_dir = ""
     cfg.dataset.mri_dir = ""
@@ -94,17 +96,24 @@ def init_cfg(yaml_file=None):
     cfg.train.beta_2=0.999
     cfg.train.resume=False # false: fresh optimizer (optional ckpt weights); true: full-state resume
     cfg.train.run_dir="" # optional explicit output directory; resume defaults to checkpoint run
-    cfg.train.earlystopping_patience=20 # counted in validation checks, not epochs
-    cfg.train.earlystopping_delta=0.0001 # 0.01% decline as threshold
+    cfg.train.earlystopping_patience=20 # validation checks; changing on resume resets the stopping counter
+    cfg.train.earlystopping_delta=0.0001 # absolute improvement; changing on resume resets the stopping counter
     cfg.train.sample_range_lower=0
     cfg.train.sample_range_upper=1000 # define how many slices to sample
     cfg.train.loss='mse'
     cfg.train.scheduler=CN()
     cfg.train.scheduler.enabled=True
+    cfg.train.scheduler.type='plateau' # plateau: halve on monitor plateau; cosine: per-epoch decay to min_lr over num_epochs
     cfg.train.scheduler.factor=0.5
     cfg.train.scheduler.patience=5
     cfg.train.scheduler.min_lr=1e-7
     cfg.train.scheduler.cooldown=0
+    # Exponential moving average of DDPM weights, used for validation, previews
+    # and (via ddpm.use_ema) inference. Raw weights are still saved for resume.
+    cfg.train.ema=CN()
+    cfg.train.ema.enabled=False
+    cfg.train.ema.decay=0.9999
+    cfg.train.ema.warmup=True # effective decay min(decay, (1+n)/(10+n)) so early EMA follows the model
     # ------------------ #
     # options for G
     # ------------------ #
@@ -183,7 +192,8 @@ def init_cfg(yaml_file=None):
     cfg.ddpm.beta_start = 0.0001
     cfg.ddpm.beta_end = 0.02
     cfg.ddpm.clip_sample = True
-    
+    cfg.ddpm.use_ema = True # inference loads a checkpoint's ema_model weights when present
+
     cfg.ldm=CN()
     cfg.ldm.num_train_timesteps = 1000
     cfg.ldm.num_inference_steps = 1000
@@ -217,6 +227,29 @@ def init_cfg(yaml_file=None):
     cfg.validation.preview.seeds=[]
     cfg.validation.preview.seed=1729
     cfg.validation.preview.display_range=[0.0, 1.0]
+    # Full-volume DDIM sampling of fixed validation volumes. Measures what the
+    # single-step denoising MSE cannot: accumulated intensity bias and
+    # slice-to-slice brightness flicker of generated volumes.
+    cfg.validation.volume_eval=CN()
+    cfg.validation.volume_eval.enabled=False
+    cfg.validation.volume_eval.epoch_interval=2
+    cfg.validation.volume_eval.num_volumes=4
+    cfg.validation.volume_eval.volume_ids=[]
+    cfg.validation.volume_eval.num_inference_steps=50
+    cfg.validation.volume_eval.eta=0.0
+    cfg.validation.volume_eval.batch_size=16
+    cfg.validation.volume_eval.seed=2024
+    cfg.validation.volume_eval.foreground_threshold=0.05 # normalized target intensity
+    cfg.validation.volume_eval.min_foreground_fraction=0.03 # slices with less foreground are not in brightness stats
+    # Start all slices of one volume from the same initial noise (inference and volume_eval).
+    cfg.validation.shared_volume_noise=False
+    # Test mode only: reproducible DDPM sampling from per-slice seeded noise streams
+    # (seeded_sampling.py), plus float32 volumes saved to saved_outputs/epoch_*/volumes.
+    cfg.validation.seeded_sampling=CN()
+    cfg.validation.seeded_sampling.enabled=False
+    cfg.validation.seeded_sampling.namespace="" # stream version, e.g. P006-v1
+    # None default: YAML numbers such as 2024 load as int; the stream key uses str(seed_label).
+    cfg.validation.seeded_sampling.seed_label=None
     cfg.validation.save_dicom=False
     cfg.validation.save_png=False
     cfg.validation.save_npz=False
@@ -234,6 +267,24 @@ def init_cfg(yaml_file=None):
         import yaml
         with open(yaml_file, encoding="utf-8") as stream:
             values = yaml.safe_load(stream) or {}
+        if "case" in values:
+            dataset_values = values.setdefault("dataset", {})
+            if "case" in dataset_values:
+                raise ValueError("Specify case at the root OR under dataset, not both.")
+            dataset_values["case"] = values.pop("case")
+        cases = values.get("dataset", {}).get("case", [])
+        if not isinstance(cases, list):
+            raise ValueError("case must be a list of mappings.")
+        # Only manual case paths are YAML-relative. Existing CSV/data_dir
+        # resolution is deliberately unchanged for historical configurations.
+        from pathlib import Path
+        from seg2med_workflow.config import resolve_path
+        for entry in cases:
+            if not isinstance(entry, dict):
+                raise ValueError("Each case must be a mapping.")
+            for key in ("prior", "prior_semantic", "img"):
+                if entry.get(key):
+                    entry[key] = str(resolve_path(entry[key], Path(yaml_file).resolve().parent))
         for key in ("writeTensorboard", "use_tensorboard"):
             values.get("train", {}).pop(key, None)
         cfg.merge_from_other_cfg(CN(values))

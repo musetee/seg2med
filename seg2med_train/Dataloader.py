@@ -56,7 +56,8 @@ class NormalizePriorTargetd:
         if modality not in self.target_ranges:
             raise ValueError(f"Unsupported modality id: {modality}")
 
-        data[self.target_key] = self._scale(data[self.target_key], self.target_ranges[modality])
+        data[self.target_key] = (self._scale(data[self.target_key], self.target_ranges[modality])
+                                 if data.get("has_target", True) else torch.zeros_like(data[self.target_key]))
         if self.normalize_source:
             data[self.source_key] = self._scale(data[self.source_key], self.source_ranges[modality])
         return data
@@ -414,6 +415,7 @@ def load_image_prior_csv(opt, my_paths):
         normalize_source=True,
     )
 
+
 @register_dataset("semantic_prior_csv")
 def load_semantic_prior_csv(opt, my_paths):
     return PriorImageCsvLoader(
@@ -454,7 +456,12 @@ class PriorImageCsvLoader(BaseDataLoader):
                 raise FileNotFoundError(f"{label} does not exist: {path}")
             return pd.read_csv(path, dtype={SCHEMA.ID: str}, keep_default_na=False)
 
-        if self.configs.mode == "train":
+        manual = getattr(self.configs.dataset, "case", [])
+        if manual:
+            from .manual_cases import case_rows
+            self.train_ds = []
+            self.val_ds = self.dataframe_to_dict_list(pd.DataFrame(case_rows(self.configs, self.source_column)))
+        elif self.configs.mode == "train":
             train_csv = self.configs.dataset.train_csv
             val_csv = self.configs.dataset.val_csv
             if not val_csv:
@@ -491,7 +498,13 @@ class PriorImageCsvLoader(BaseDataLoader):
         rows = []
         for _, row in df.iterrows():
             source_path = self.resolve_path(data_dir, row[self.source_column])
-            target_path = self.resolve_path(data_dir, row[SCHEMA.IMG])
+            has_target = bool(str(row[SCHEMA.IMG]).strip())
+            if not has_target and (self.configs.mode != "test" or self.configs.model_name not in {
+                    "ddpm2d_seg2med", "ddpm2d_seg2med_multimodal"}):
+                raise ValueError("Missing target img is supported only for DDPM2D test inference.")
+            # Internal shape carrier only: zeroed by NormalizePriorTargetd and
+            # never evaluated/exported as a real target when has_target=False.
+            target_path = self.resolve_path(data_dir, row[SCHEMA.IMG]) if has_target else source_path
             patient = str(row.get("patient_id", row[SCHEMA.ID]))
             pattern = self.configs.dataset.patient_id_regex
             if pattern:
@@ -516,12 +529,13 @@ class PriorImageCsvLoader(BaseDataLoader):
                     self.indicator_A: source_path,
                     self.indicator_B: target_path,
                     "modality": int(row[SCHEMA.MODALITY_ID]),
+                    "has_target": has_target,
                     "Aorta_diss": row[SCHEMA.AORTA_DISS],
                     "patient_ID": str(row[SCHEMA.ID]),
                     "patient_key": f"{namespace}:{patient}",
                     "sample_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24],
                     "A_paths": source_path,
-                    "B_paths": target_path,
+                    "B_paths": target_path if has_target else "",
                 }
             )
         return rows

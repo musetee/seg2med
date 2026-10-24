@@ -141,6 +141,10 @@ def run(
         print("Model:", opt.model_name)
         print("Mode:", opt.mode)
         print("Configuration:", os.path.abspath(args.config))
+        if opt.dataset.case:
+            print("Manual inference cases:", len(opt.dataset.case))
+            for case in opt.dataset.case:
+                print(f"  {case.get('id', '?')}: {case.get('prior', case.get('prior_semantic', '?'))}")
         return
 
     from .Dataloader import init_dataset

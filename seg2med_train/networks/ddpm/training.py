@@ -6,6 +6,7 @@ Validation and previews use separate persisted random experiments.
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import importlib.metadata
@@ -64,6 +65,82 @@ def unwrap(model):
     return model
 
 
+class EMA:
+    """Exponential moving average of model weights (kept in float32, eval mode).
+
+    Single checkpoint weights of a DDPM trained at a high learning rate are
+    noisy; small biases in the predicted noise accumulate over the sampling
+    chain into global intensity offsets. The averaged weights are far more
+    stable for sampling.
+    """
+
+    def __init__(self, model, decay, warmup=True):
+        if not 0.0 < decay < 1.0:
+            raise ValueError("train.ema.decay must be in (0, 1).")
+        self.decay, self.warmup, self.num_updates = float(decay), bool(warmup), 0
+        self.model = copy.deepcopy(unwrap(model)).float().eval().requires_grad_(False)
+
+    def current_decay(self):
+        if not self.warmup:
+            return self.decay
+        return min(self.decay, (1 + self.num_updates) / (10 + self.num_updates))
+
+    @torch.no_grad()
+    def update(self, model):
+        decay = self.current_decay()
+        source = unwrap(model)
+        for averaged, current in zip(self.model.parameters(), source.parameters()):
+            averaged.lerp_(current.detach().float(), 1.0 - decay)
+        for averaged, current in zip(self.model.buffers(), source.buffers()):
+            averaged.copy_(current)
+        self.num_updates += 1
+
+    def state_dict(self):
+        return {"decay": self.decay, "warmup": self.warmup, "num_updates": self.num_updates}
+
+    def load(self, weights, state):
+        self.model.load_state_dict(weights)
+        self.num_updates = int(state.get("num_updates", 0))
+
+
+def with_defaults(saved, defaults):
+    """Fill settings introduced after a run was started with their defaults.
+
+    Lets older runs resume when new options exist but are left at default values;
+    a changed value still differs and is rejected by the caller.
+    """
+    if isinstance(saved, dict) and isinstance(defaults, dict):
+        return {**defaults, **{key: with_defaults(value, defaults.get(key)) for key, value in saved.items()}}
+    return saved
+
+
+def _default_section(*keys):
+    import yaml
+    from ...utils.my_configs_yacs import init_cfg
+
+    section = yaml.safe_load(init_cfg().dump())
+    for key in keys:
+        section = section[key]
+    return section
+
+
+def code_version():
+    """Git commit and uncommitted diff of the repository at run start (best effort)."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[3]
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=True).stdout
+    try:
+        diff = git("diff", "HEAD")
+        return {"commit": git("rev-parse", "HEAD").strip(), "dirty": bool(diff.strip()),
+                "untracked": git("ls-files", "--others", "--exclude-standard").split()}, diff
+    except (OSError, subprocess.CalledProcessError) as error:
+        return {"commit": "unknown", "error": str(error)}, ""
+
+
 def load_checkpoint(path, device="cpu"):
     # Checkpoints contain optimizer/RNG Python state; load only trusted files.
     return torch.load(path, map_location=device, weights_only=False)
@@ -89,7 +166,13 @@ def samples(loader, keys):
                 raise ValueError("DDPM training requires stable sample_id metadata from the dataset loader.")
             depth = source.shape[-1] if source.ndim == 5 else 1
             for z in range(depth):
-                yield {"source": source[index, ..., z] if source.ndim == 5 else source[index],
+                extra = {}
+                for key in keys[2:]:
+                    value = volume[key]
+                    if value.shape != source.shape:
+                        raise ValueError(f"Conditioning field {key!r} is not aligned with the source.")
+                    extra[key] = value[index, ..., z] if value.ndim == 5 else value[index]
+                yield {**extra, "source": source[index, ..., z] if source.ndim == 5 else source[index],
                        "target": target[index, ..., z] if target.ndim == 5 else target[index],
                        "sample_id": f"{base}:z{z:06d}",
                        "patient_key": str(_item(volume, "patient_key", index, _item(volume, "patient_ID", index))),
@@ -122,6 +205,11 @@ def tensors(rows, owner):
     batch = {"modality": torch.tensor([row["modality"] for row in rows], device=owner.device),
              "Aorta_diss": torch.tensor([row["Aorta_diss"] for row in rows], device=owner.device)}
     condition = owner._get_modality_condition(batch) if owner.with_conditioning else None
+    for key in owner.keys[2:]:
+        value = torch.stack([torch.as_tensor(row[key]) for row in rows]).to(owner.device)
+        batch[key] = value.as_tensor() if hasattr(value, "as_tensor") else value
+    if hasattr(owner, "prepare_conditioning"):
+        return owner.prepare_conditioning(source, batch), target, batch, condition
     return owner.prepare_model_input(source), target, batch, condition
 
 
@@ -152,6 +240,32 @@ def training_batches(owner):
         yield previous, local_count, local_count * owner.world_size / int(total_count)
 
 
+DENOISING_METRICS = {"val_denoising_mse", "val_patient_denoising_mse", "val_modality_patient_denoising_mse"}
+VOLUME_METRICS = {"val_volume_mae", "val_volume_brightness_std", "val_volume_slice_jump"}
+
+
+def volume_metrics(output, target, threshold, min_fraction):
+    """Intensity agreement of one generated (D,H,W) volume in normalized space.
+
+    Brightness ratio = mean generated / mean real foreground intensity per slice.
+    Its spread over slices and mean neighbour jump quantify bright/dark flicker.
+    """
+    foreground = target > threshold
+    if not foreground.any():
+        raise ValueError("Volume evaluation target has no foreground; check foreground_threshold.")
+    ratios = []
+    minimum = min_fraction * foreground[0].size
+    for out, real, mask in zip(output, target, foreground):
+        if mask.sum() >= minimum:
+            ratios.append(float(out[mask].mean()) / max(float(real[mask].mean()), 1e-8))
+    ratios = np.asarray(ratios)
+    return {"mae": float(np.abs(output - target)[foreground].mean()),
+            "brightness_ratio": float(ratios.mean()) if ratios.size else math.nan,
+            "brightness_std": float(ratios.std()) if ratios.size else math.nan,
+            "slice_jump": float(np.abs(np.diff(ratios)).mean()) if ratios.size > 1 else 0.0,
+            "slices": int(output.shape[0]), "brightness_slices": int(ratios.size)}
+
+
 def noise_target(scheduler, target, noise, timesteps):
     prediction_type = scheduler.prediction_type
     if prediction_type == "epsilon":
@@ -174,17 +288,33 @@ class DiffusionTrainer:
         self.monitor = self.config.validation.monitor
         if self.config.ddpm.noise_type not in {"normal", "uniform"}:
             raise ValueError("ddpm.noise_type must be normal or uniform.")
-        valid_metrics = {"val_denoising_mse", "val_patient_denoising_mse", "val_modality_patient_denoising_mse"}
+        valid_metrics = DENOISING_METRICS | VOLUME_METRICS | {"preview_generated_image_mse"}
         if self.monitor not in valid_metrics:
             raise ValueError(f"validation.monitor must be one of {sorted(valid_metrics)}")
+        if self.monitor in VOLUME_METRICS and not self.config.validation.volume_eval.enabled:
+            raise ValueError(f"validation.monitor={self.monitor} requires validation.volume_eval.enabled: true.")
+        if self.monitor == "preview_generated_image_mse" and not self.config.validation.preview.enabled:
+            raise ValueError("validation.monitor=preview_generated_image_mse requires validation.preview.enabled: true.")
         self.min_delta = float(self.config.train.earlystopping_delta)
         self.patience = int(self.config.train.earlystopping_patience)
         if self.min_delta < 0 or self.patience < 1 or self.config.train.val_epoch_interval < 1:
             raise ValueError("Invalid early stopping or validation interval settings.")
         options = self.config.train.scheduler
-        self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            owner.optimizer, mode="min", factor=options.factor, patience=options.patience,
-            threshold=self.min_delta, threshold_mode="abs", min_lr=options.min_lr, cooldown=options.cooldown)
+        if options.type == "plateau":
+            self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                owner.optimizer, mode="min", factor=options.factor, patience=options.patience,
+                threshold=self.min_delta, threshold_mode="abs", min_lr=options.min_lr, cooldown=options.cooldown)
+        elif options.type == "cosine":
+            # Clamped at min_lr after num_epochs (CosineAnnealingLR would rise
+            # again). The horizon follows the current num_epochs on resume.
+            epochs, base = int(self.config.train.num_epochs), float(self.config.train.learning_rate)
+            floor = min(float(options.min_lr) / base, 1.0)
+            self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+                owner.optimizer, lambda epoch: floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(epoch, epochs) / epochs)))
+        else:
+            raise ValueError("train.scheduler.type must be plateau or cosine.")
+        ema = self.config.train.ema
+        self.ema = EMA(owner.model, ema.decay, ema.warmup) if ema.enabled else None
         self.scaler = torch.amp.GradScaler("cuda", enabled=owner.device.type == "cuda")
         self.best, self.bad_checks, self.global_step, self.start_epoch = math.inf, 0, 0, 0
         self.history = []
@@ -193,21 +323,38 @@ class DiffusionTrainer:
             self.resume_state = load_checkpoint(self.config.ckpt_path)
             self._restore()
         self.run_metadata = self._metadata()
+        self.active_modalities = self._active_modalities()
         metadata_path = self.logs / "run_metadata.json"
+        previous = None
+        if self.config.train.resume and metadata_path.exists():
+            previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+        checkpoint_preprocessing = self.resume_state.get("preprocessing") if self.resume_state else None
+        baseline = checkpoint_preprocessing or (previous["preprocessing"] if previous else None)
+        self._log_normalization(baseline, checkpoint_preprocessing is not None)
         if metadata_path.exists():
             if not self.config.train.resume:
                 raise ValueError("Run directory already contains training metadata; choose a new train.run_dir or resume explicitly.")
-            previous = json.loads(metadata_path.read_text(encoding="utf-8"))
-            for key in ("diffusion", "preprocessing", "validation", "source_manifests"):
+            previous = {**previous, "validation": with_defaults(previous["validation"], _default_section("validation"))}
+            for key in ("diffusion", "validation", "source_manifests"):
                 if previous[key] != self.run_metadata[key]:
                     raise ValueError(f"Run metadata changed ({key}); start a fresh run rather than reusing validation experiments.")
+            self._check_preprocessing(previous["preprocessing"], "original run metadata")
+            if checkpoint_preprocessing is not None:
+                self._check_preprocessing(checkpoint_preprocessing, "checkpoint")
         elif self.config.train.resume:
             raise ValueError("Resume requires the original run_metadata.json and validation sampling records.")
         elif self.rank == 0:
-            self._json(metadata_path, self.run_metadata)
+            # Recorded once at run start; resume compares only the keys above.
+            version, diff = code_version()
+            self._json(metadata_path, {**self.run_metadata, "code_version": version})
+            if diff:
+                (self.logs / "code_uncommitted.diff").write_text(diff, encoding="utf-8")
+            logger.info("Code version | commit=%s | uncommitted changes=%s",
+                        version["commit"], version.get("dirty", "unknown"))
         with evaluation(owner.model):
             self.validation_records = self._validation_records()
             self.preview_records = self._preview_records()
+            self.volume_records = self._volume_records()
         if self.resume_state:
             states = self.resume_state["rng_states"]
             if owner.is_ddp and len(states) != owner.world_size:
@@ -219,6 +366,70 @@ class DiffusionTrainer:
     @staticmethod
     def _json(path, content):
         path.write_text(json.dumps(content, indent=2, allow_nan=False), encoding="utf-8")
+
+    def _active_modalities(self):
+        """Read raw dataset metadata without loading images or advancing loaders/RNG.
+
+        Unknown dataset wrappers fall back to checking every normalization range,
+        never silently bypassing the resume safety check.
+        """
+        def collect(dataset):
+            if isinstance(dataset, (list, tuple)):
+                if not dataset or any(not isinstance(row, dict) or "modality" not in row for row in dataset):
+                    return None
+                return {str(int(row["modality"])) for row in dataset}
+            if isinstance(dataset, torch.utils.data.Subset):
+                parent = dataset.dataset
+                raw = parent if isinstance(parent, (list, tuple)) else getattr(parent, "data", None)
+                return collect([raw[index] for index in dataset.indices]) if raw is not None else None
+            if hasattr(dataset, "data"):
+                return collect(dataset.data)
+            if hasattr(dataset, "dataset"):
+                return collect(dataset.dataset)
+            if hasattr(dataset, "datasets"):
+                groups = [collect(child) for child in dataset.datasets]
+                return set().union(*groups) if all(group is not None for group in groups) else None
+            return None
+
+        groups = [collect(loader.dataset) for loader in (self.owner.train_loader, self.owner.val_loader)]
+        if any(group is None for group in groups):
+            logger.warning("Cannot determine all dataset modalities from raw metadata; checking all normalization ranges.")
+            return None
+        return set().union(*groups)
+
+    def _log_normalization(self, baseline, stored_in_checkpoint):
+        if self.rank != 0:
+            return
+        current = self.run_metadata["preprocessing"]["normalization"]
+        saved = baseline["normalization"] if baseline else {}
+        logger.info("Normalization | active train/validation modalities=%s | clipping/scaling to [0, 1]",
+                    sorted(self.active_modalities) if self.active_modalities is not None else "unknown (check all)")
+        if self.resume_state and not stored_in_checkpoint:
+            logger.info("Normalization | legacy checkpoint has no range snapshot; using original run_metadata.json as baseline.")
+        for role in ("source", "target"):
+            for modality in sorted(set(current[role]) | set(saved.get(role, {}))):
+                active = self.active_modalities is None or modality in self.active_modalities
+                logger.info("Normalization | %s | modality=%s | %s | checkpoint%s=%s | current=%s",
+                            role, modality, "ACTIVE" if active else "unused",
+                            " (run metadata fallback)" if baseline and not stored_in_checkpoint else "",
+                            saved.get(role, {}).get(modality, "not available"), current[role].get(modality, "not available"))
+
+    def _check_preprocessing(self, saved, origin):
+        current = self.run_metadata["preprocessing"]
+        if {k: v for k, v in saved.items() if k != "normalization"} != {
+                k: v for k, v in current.items() if k != "normalization"}:
+            raise ValueError(f"Run metadata changed (preprocessing, {origin}); dataset/preprocessing settings must match on resume.")
+        for role in ("source", "target"):
+            old_ranges, new_ranges = saved["normalization"][role], current["normalization"][role]
+            modalities = self.active_modalities
+            if modalities is None:
+                modalities = set(old_ranges) | set(new_ranges)
+            for modality in sorted(modalities):
+                if modality not in old_ranges or modality not in new_ranges or old_ranges[modality] != new_ranges[modality]:
+                    raise ValueError(
+                        f"Normalization changed for active modality {modality} ({role}, {origin}): "
+                        f"saved={old_ranges.get(modality)}, current={new_ranges.get(modality)}. "
+                        "Restore the original range or start a new training run.")
 
     def _metadata(self):
         owner = self.owner
@@ -236,9 +447,13 @@ class DiffusionTrainer:
             manifests[key] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "in-memory-test"
         preprocessing = {key: value for key, value in config["dataset"].items()
                          if key not in {"train_csv", "val_csv", "test_csv", "data_dir", "batch_size", "val_batch_size",
-                                        "num_workers", "random_shuffle", "train_number", "val_number"}}
+                                        "num_workers", "random_shuffle", "train_number", "val_number",
+                                        "case", "modality_name"}}
         from ...Dataloader import NormalizePriorTargetd
-        normalizer = NormalizePriorTargetd(self.owner.keys[0], self.owner.keys[1])
+        normalizer = (owner.normalizer() if hasattr(owner, "normalizer")
+                      else NormalizePriorTargetd(owner.keys[0], owner.keys[1]))
+        if hasattr(owner, "conditioning_metadata"):
+            preprocessing["conditioning"] = owner.conditioning_metadata()
         return {"diffusion": {"num_train_timesteps": owner.scheduler.num_train_timesteps,
                               "prediction_type": str(owner.scheduler.prediction_type),
                               "noise_type": self.config.ddpm.noise_type,
@@ -345,6 +560,130 @@ class DiffusionTrainer:
             self._json(path, records)
         return records
 
+    def _volume_records(self):
+        options = self.config.validation.volume_eval
+        if not options.enabled:
+            return []
+        if not 1 <= options.num_inference_steps <= self.owner.scheduler.num_train_timesteps:
+            raise ValueError("volume_eval.num_inference_steps must be within 1..num_train_timesteps.")
+        if options.epoch_interval < 1 or options.num_volumes < 1 or options.batch_size < 1 or options.eta < 0:
+            raise ValueError("Invalid volume_eval interval, volume count, batch size, or eta.")
+        patients = {}
+        for (sample_id, repeat), row in sorted(self.validation_records.items()):
+            if repeat == 0:
+                patients.setdefault(sample_id.rsplit(":z", 1)[0], row["patient_key"])
+        if options.volume_ids:
+            if len(set(options.volume_ids)) != len(options.volume_ids) or set(options.volume_ids) - set(patients):
+                raise ValueError("volume_eval.volume_ids must be unique volume IDs (sample_id without :z suffix).")
+            selected = list(options.volume_ids)
+        else:
+            # One volume per patient, spread evenly over the sorted patients.
+            first = {}
+            for volume, patient in sorted(patients.items()):
+                first.setdefault(patient, volume)
+            keys = sorted(first)
+            count = min(options.num_volumes, len(keys))
+            selected = [first[keys[index * len(keys) // count]] for index in range(count)]
+        records = [{"volume_id": volume, "patient_key": patients[volume],
+                    "seed": stable_seed(options.seed, volume, "volume-eval")} for volume in selected]
+        path = self.logs / "volume_eval_samples.json"
+        if path.exists():
+            if json.loads(path.read_text(encoding="utf-8")) != records:
+                raise ValueError("Fixed volume_eval selection changed; use the original run settings.")
+        elif self.config.train.resume:
+            raise ValueError("Resume requires volume_eval_samples.json from the original run.")
+        elif self.rank == 0:
+            self._json(path, records)
+        return records
+
+    def eval_model(self):
+        """Weights used for validation and sampling: EMA when enabled."""
+        return self.ema.model if self.ema is not None else unwrap(self.owner.model)
+
+    def _ddim_sample(self, model, image, source, condition, scheduler, eta, generator=None):
+        owner = self.owner
+        for timestep in scheduler.timesteps:
+            step = torch.full((image.shape[0],), int(timestep), device=owner.device, dtype=torch.long)
+            # Prediction adapters add training noise, so call the model
+            # directly here on an already noisy DDIM sample + prior.
+            arguments = {"x": torch.cat([image, source], dim=1), "timesteps": step}
+            if getattr(owner, "class_embed_condition", False):
+                arguments["context" if owner.guide_by_context else "class_labels"] = condition
+            else:
+                arguments["context"] = condition
+            predicted = model(**arguments)
+            image, _ = scheduler.step(predicted.float(), int(timestep), image, eta=eta, generator=generator)
+        return image
+
+    def _broadcast(self, metrics):
+        if self.owner.is_ddp:
+            shared = [metrics]
+            dist.broadcast_object_list(shared, src=0)
+            metrics = shared[0]
+        return metrics
+
+    def volume_evaluation(self, epoch):
+        """DDIM-sample complete fixed validation volumes and score their intensities."""
+        metrics = {}
+        if self.rank == 0 and self.volume_records:
+            metrics = self._volume_evaluation(epoch)
+        return self._broadcast(metrics)
+
+    def _volume_evaluation(self, epoch):
+        owner, options = self.owner, self.config.validation.volume_eval
+        selected = {record["volume_id"]: record for record in self.volume_records}
+        folder = Path(owner.paths["saved_img_folder"]) / "volume_eval" / f"epoch_{epoch:04d}"
+        folder.mkdir(parents=True, exist_ok=True)
+        minimum, maximum = self.config.validation.preview.display_range
+        per_volume = []
+        # Loader iteration and sampling must not consume training RNG state.
+        with evaluation(owner.model):
+            volumes = defaultdict(list)
+            for row in samples(owner.val_loader, owner.keys):
+                volume = row["sample_id"].rsplit(":z", 1)[0]
+                if volume in selected:
+                    volumes[volume].append(row)
+            model = self.eval_model()
+            scheduler = self._ddim_scheduler(options.num_inference_steps)
+            for record in self.volume_records:
+                rows = sorted(volumes[record["volume_id"]], key=lambda row: row["sample_id"])
+                generator = torch.Generator().manual_seed(record["seed"])
+                create = torch.rand if self.config.ddpm.noise_type == "uniform" else torch.randn
+                shape = tuple(rows[0]["target"].shape)
+                shared = create(shape, generator=generator) if self.config.validation.shared_volume_noise else None
+                outputs, targets = [], []
+                for start in range(0, len(rows), options.batch_size):
+                    chunk = rows[start:start + options.batch_size]
+                    source, target, batch, condition = tensors(chunk, owner)
+                    noise = (shared.expand(len(chunk), *shape) if shared is not None
+                             else torch.stack([create(shape, generator=generator) for _ in chunk]))
+                    with torch.autocast(device_type=owner.device.type, enabled=owner.device.type == "cuda"):
+                        image = self._ddim_sample(model, noise.to(owner.device), source, condition,
+                                                  scheduler, options.eta, generator)
+                    outputs.append(image[:, 0].float().cpu().numpy())
+                    targets.append(target[:, 0].float().cpu().numpy())
+                output, target = np.concatenate(outputs), np.concatenate(targets)
+                scores = volume_metrics(output, target, options.foreground_threshold, options.min_foreground_fraction)
+                per_volume.append({**record, **scores})
+                # Through-plane reformats make slice-to-slice flicker directly visible.
+                panels = [np.flipud(volume[:, :, volume.shape[2] // 2]) for volume in (output, target)]
+                panels += [np.flipud(volume[:, volume.shape[1] // 2, :]) for volume in (output, target)]
+                image = np.concatenate([((np.clip(panel, minimum, maximum) - minimum) * 255 / (maximum - minimum))
+                                        .astype(np.uint8) for panel in panels], axis=1)
+                Image.fromarray(image).save(folder / (hashlib.sha256(record["volume_id"].encode()).hexdigest()[:16] + ".png"))
+        self._json(folder / "volume_metrics.json", {
+            "epoch": epoch, "global_step": self.global_step, "num_inference_steps": options.num_inference_steps,
+            "eta": options.eta, "shared_volume_noise": bool(self.config.validation.shared_volume_noise),
+            "ema": self.ema is not None, "panel_order": ["generated_reformat_1", "real_reformat_1",
+                                                         "generated_reformat_2", "real_reformat_2"],
+            "volumes": per_volume})
+        result = {f"val_volume_{key}": float(np.nanmean([row[key] for row in per_volume]))
+                  for key in ("mae", "brightness_ratio", "brightness_std", "slice_jump")}
+        if not all(math.isfinite(value) for value in result.values()):
+            raise ValueError("Nonfinite volume evaluation metric; check foreground settings.")
+        logger.info("Volume eval | epoch=%d | %s", epoch, json.dumps(result))
+        return result
+
     def validate(self):
         owner = self.owner
         values = []
@@ -362,7 +701,7 @@ class DiffusionTrainer:
                         noises.append(create(tuple(row["target"].shape), generator=generator))
                     noise = torch.stack(noises).to(owner.device)
                     timesteps = torch.tensor([record["timestep"] for record in records], device=owner.device)
-                    prediction = owner.model_inferer_predict(target, source, unwrap(owner.model), noise, timesteps, condition)
+                    prediction = owner.model_inferer_predict(target, source, self.eval_model(), noise, timesteps, condition)
                     expected = noise_target(owner.scheduler, target, noise, timesteps)
                     losses = F.mse_loss(prediction.float(), expected.float(), reduction="none").flatten(1).mean(1)
                     for row, loss in zip(rows, losses.cpu().tolist()):
@@ -387,7 +726,7 @@ class DiffusionTrainer:
             raise ValueError("Nonfinite validation metric; refusing checkpoint selection.")
         return metrics
 
-    def _ddim_scheduler(self):
+    def _ddim_scheduler(self, num_inference_steps=None):
         owner = self.owner
         scheduler = DDIMScheduler(num_train_timesteps=owner.scheduler.num_train_timesteps,
                                   prediction_type=owner.scheduler.prediction_type,
@@ -397,7 +736,8 @@ class DiffusionTrainer:
         for key in ("betas", "alphas", "alphas_cumprod"):
             setattr(scheduler, key, getattr(owner.scheduler, key).detach().clone().to(owner.device))
         scheduler.final_alpha_cumprod = scheduler.final_alpha_cumprod.to(owner.device)
-        scheduler.set_timesteps(self.config.validation.preview.num_inference_steps, device=owner.device)
+        scheduler.set_timesteps(num_inference_steps or self.config.validation.preview.num_inference_steps,
+                                device=owner.device)
         return scheduler
 
     def preview(self, epoch):
@@ -417,21 +757,11 @@ class DiffusionTrainer:
                 source, target, batch, condition = tensors([row], owner)
                 generator = torch.Generator().manual_seed(record["seed"])
                 image = torch.randn(tuple(target.shape), generator=generator).to(owner.device)
-                for timestep in scheduler.timesteps:
-                    step = torch.tensor([int(timestep)], device=owner.device)
-                    # Prediction adapters add training noise, so call the model
-                    # directly here on an already noisy DDIM sample + prior.
-                    arguments = {"x": torch.cat([image, source], dim=1), "timesteps": step}
-                    if getattr(owner, "class_embed_condition", False):
-                        arguments["context" if owner.guide_by_context else "class_labels"] = condition
-                    else:
-                        arguments["context"] = condition
-                    predicted = unwrap(owner.model)(**arguments)
-                    image, _ = scheduler.step(predicted, int(timestep), image,
-                                              eta=options.eta, generator=generator)
+                image = self._ddim_sample(self.eval_model(), image, source, condition, scheduler,
+                                          options.eta, generator)
                 minimum, maximum = options.display_range
                 panels = []
-                for tensor in (source, image, target):
+                for tensor in (*source.split(1, dim=1), image, target):
                     array = tensor[0, 0].detach().float().cpu().numpy().T
                     panels.append(((np.clip(array, minimum, maximum) - minimum) * 255 / (maximum - minimum)).astype(np.uint8))
                 filename = hashlib.sha256(row["sample_id"].encode()).hexdigest()[:16] + ".png"
@@ -443,7 +773,7 @@ class DiffusionTrainer:
             "epoch": epoch, "global_step": self.global_step, "sampler": options.sampler,
             "num_inference_steps": options.num_inference_steps, "eta": options.eta,
             "timesteps": scheduler.timesteps.cpu().tolist(), "display_range": list(options.display_range),
-            "panel_order": ["conditioning_prior", "generated_image", "real_target"], "samples": metadata})
+            "panel_order": ["conditioning_prior", *owner.keys[2:], "generated_image", "real_target"], "samples": metadata})
         return {"preview_generated_image_mse": float(np.mean(generated_metrics))}
 
     def _restore(self):
@@ -454,13 +784,17 @@ class DiffusionTrainer:
         old = state["configuration"]
         if old["model_name"] != self.config.model_name or old["validation"]["monitor"] != self.monitor:
             raise ValueError("Cannot change model or monitoring metric during resume.")
-        if old["train"]["earlystopping_delta"] != self.min_delta:
-            raise ValueError("Cannot change the minimum improvement during resume.")
-        if old["train"]["loss"] != self.config.train.loss or old["train"]["scheduler"] != dict(self.config.train.scheduler):
+        old_scheduler = with_defaults(old["train"]["scheduler"], _default_section("train", "scheduler"))
+        if old["train"]["loss"] != self.config.train.loss or old_scheduler != dict(self.config.train.scheduler):
             raise ValueError("Cannot change the training loss or LR scheduler settings during resume.")
+        old_ema = with_defaults(old["train"].get("ema", {}), _default_section("train", "ema"))
+        if old_ema != dict(self.config.train.ema):
+            raise ValueError("Cannot change train.ema settings during resume.")
         self.owner.optimizer.load_state_dict(state["optimizer"])
         self.lr_scheduler.load_state_dict(state["lr_scheduler"])
         self.scaler.load_state_dict(state["scaler"])
+        if self.ema is not None:
+            self.ema.load(state["ema_model"], state["ema"])
         if hasattr(self.owner, "classifier"):
             unwrap(self.owner.classifier).load_state_dict(state["classifier"])
             self.owner.classifier_optimizer.load_state_dict(state["classifier_optimizer"])
@@ -468,6 +802,25 @@ class DiffusionTrainer:
         self.best = state["early_stopping"]["best_metric"]
         self.bad_checks = state["early_stopping"]["bad_checks"]
         self.history = state["history"]
+        previous_stopping = state["early_stopping"]
+        previous_delta = previous_stopping.get("min_delta", old["train"]["earlystopping_delta"])
+        previous_patience = previous_stopping.get("patience", old["train"]["earlystopping_patience"])
+        if previous_delta != self.min_delta or previous_patience != self.patience:
+            # A changed policy starts a fresh patience window, not a fresh run.
+            # Small improvements ignored under the old delta still provide a
+            # historical baseline for the new policy. Do not replay old failures.
+            historical_metrics = [float(row[self.monitor]) for row in self.history
+                                  if row.get(self.monitor) is not None and math.isfinite(float(row[self.monitor]))]
+            self.best = min(historical_metrics, default=self.best)
+            self.bad_checks = 0
+            logger.info(
+                "Resuming with changed early stopping: delta=%g -> %g, patience=%d -> %d; "
+                "reset bad validation checks to 0; historical best=%g. "
+                "Optimizer and LR scheduler state are preserved (%s).",
+                previous_delta, self.min_delta, previous_patience, self.patience, self.best,
+                # Only ReduceLROnPlateau has a threshold; cosine (LambdaLR) does not.
+                f"scheduler threshold={self.lr_scheduler.threshold:g}" if hasattr(self.lr_scheduler, "threshold")
+                else f"scheduler type={self.config.train.scheduler.type}")
         self.resume_state = state
 
     def checkpoint(self, epoch, *, best=False, periodic=False):
@@ -486,7 +839,11 @@ class DiffusionTrainer:
                  "early_stopping": {"best_metric": self.best, "bad_checks": self.bad_checks,
                                     "patience": self.patience, "min_delta": self.min_delta},
                  "rng_states": states, "configuration": yaml.safe_load(self.config.dump()),
+                 "preprocessing": self.run_metadata["preprocessing"],
                  "history": self.history}
+        if self.ema is not None:
+            state["ema_model"] = self.ema.model.state_dict()
+            state["ema"] = self.ema.state_dict()
         if hasattr(owner, "classifier"):
             state["classifier"] = unwrap(owner.classifier).state_dict()
             state["classifier_optimizer"] = owner.classifier_optimizer.state_dict()
@@ -498,7 +855,8 @@ class DiffusionTrainer:
     def run(self):
         owner = self.owner
         if self.bad_checks >= self.patience:
-            logger.info("Checkpoint has already reached early stopping; start a fresh run to fine-tune.")
+            logger.info("Checkpoint has already reached early stopping; change earlystopping_delta or "
+                        "earlystopping_patience to resume with a new stopping policy, or start a fresh run.")
             return
         for epoch in range(self.start_epoch + 1, self.config.train.num_epochs + 1):
             owner.epoch = epoch
@@ -526,6 +884,8 @@ class DiffusionTrainer:
                 if hasattr(owner, "classifier_optimizer"):
                     self.scaler.step(owner.classifier_optimizer)
                 self.scaler.update()
+                if self.ema is not None:
+                    self.ema.update(owner.model)
                 count += real_count
                 sums += [loss.item() * real_count, mse.item() * real_count]
                 self.global_step += 1
@@ -552,16 +912,23 @@ class DiffusionTrainer:
             improved = False
             if epoch % self.config.train.val_epoch_interval == 0:
                 record.update(self.validate())
+            if self.config.validation.preview.enabled and epoch % self.config.validation.preview.epoch_interval == 0:
+                record.update(self._broadcast(self.preview(epoch)))
+            volume_options = self.config.validation.volume_eval
+            if volume_options.enabled and epoch % volume_options.epoch_interval == 0:
+                record.update(self.volume_evaluation(epoch))
+            # A validation check happens on epochs where the monitored metric exists.
+            if self.monitor in record:
                 metric = record[self.monitor]
                 improved = metric < self.best - self.min_delta
                 if improved:
                     self.best, self.bad_checks = metric, 0
                 else:
                     self.bad_checks += 1
-                if self.config.train.scheduler.enabled:
+                if self.config.train.scheduler.enabled and self.config.train.scheduler.type == "plateau":
                     self.lr_scheduler.step(metric)
-            if self.config.validation.preview.enabled and epoch % self.config.validation.preview.epoch_interval == 0:
-                record.update(self.preview(epoch))
+            if self.config.train.scheduler.enabled and self.config.train.scheduler.type == "cosine":
+                self.lr_scheduler.step()
             record.update(lr=owner.optimizer.param_groups[0]["lr"], bad_validation_checks=self.bad_checks,
                           best_metric=None if not math.isfinite(self.best) else self.best)
             self.history.append(record)
@@ -575,6 +942,16 @@ class DiffusionTrainer:
                 logger.info("Epoch summary | %s", json.dumps(record))
             interval = self.config.train.save_ckpt_interval
             self.checkpoint(epoch, best=improved, periodic=interval > 0 and epoch % interval == 0)
+            if self.rank == 0:
+                from ...plot_loss_curves import plot_loss_curves
+
+                try:
+                    # Plotting must not consume RNG state needed by training or
+                    # resume. Keep checkpoints safe even if plotting fails.
+                    with evaluation(owner.model):
+                        plot_loss_curves(self.history, self.logs)
+                except Exception:
+                    logger.exception("Could not update loss curves; epoch_metrics.csv is available for offline plotting.")
             if self.bad_checks >= self.patience:
                 logger.info("Early stopping triggered by validation metric.")
                 break

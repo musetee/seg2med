@@ -64,6 +64,7 @@ class transformDiffusionInferer(DiffusionInferer):
         intermediate_steps: int | None = 100,
         conditioning: torch.Tensor | None = None,
         verbose: bool = True,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         """
         Args:
@@ -75,6 +76,7 @@ class transformDiffusionInferer(DiffusionInferer):
             intermediate_steps: if save_intermediates is True, saves every n steps
             conditioning: Conditioning for network input.
             verbose: if true, prints the progression bar of the sampling process.
+            progress_callback: optional callback receiving completed/total steps.
         """
         if not scheduler:
             scheduler = self.scheduler
@@ -84,7 +86,7 @@ class transformDiffusionInferer(DiffusionInferer):
         else:
             progress_bar = iter(scheduler.timesteps)
         intermediates = []
-        for t in progress_bar:
+        for step, t in enumerate(progress_bar):
             # 1. predict noise model_output
             model_output = diffusion_model(
                 image, timesteps=torch.Tensor((t,)).to(input_noise.device), context=conditioning
@@ -95,6 +97,8 @@ class transformDiffusionInferer(DiffusionInferer):
             noisy_image = noisy_image[:,None,:,:]
             image, _ = scheduler.step(model_output, t, noisy_image)
             image = torch.cat((image,input_image),1)
+            if progress_callback is not None:
+                progress_callback(step + 1, len(scheduler.timesteps))
             if save_intermediates and t % intermediate_steps == 0:
                 intermediates.append(image)
         image  = image[:, 0, :, :]

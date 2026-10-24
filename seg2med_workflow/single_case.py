@@ -16,6 +16,18 @@ DEFAULTS_PATH = Path(__file__).with_name("case_defaults.yaml")
 PRIOR_COLUMNS = ("id", "aorta_diss", "prior", "img", "modality", "prior_semantic")
 
 
+def _modality(value: Any) -> int:
+    names = {name: key for key, name in MODALITY_NAMES.items()}
+    token = str(value).strip().lower()
+    try:
+        result = names[token] if token in names else int(token)
+    except ValueError as error:
+        raise ConfigError(f"Unknown modality {value!r}. Choose from {', '.join(names)}.") from error
+    if result not in MODALITY_NAMES:
+        raise ConfigError(f"Unknown modality ID {result}.")
+    return result
+
+
 def _companion(image: Path, suffix: str, *, segmentation=False) -> Path:
     stem = image.name[:-7] if image.name.lower().endswith(".nii.gz") else image.stem
     extension = ".nii.gz" if image.name.lower().endswith(".nii.gz") else ".nii"
@@ -58,6 +70,9 @@ def prepare_case(config: dict[str, Any], *, base_dir: str | Path = ".", dry_run:
     """
     defaults, _ = load_yaml(DEFAULTS_PATH)
     settings = {**defaults, **config}
+    from seg2med_physiosynth.label_schemes import validate_scheme
+    validate_scheme(settings["segmentation_label_scheme"])
+    validate_scheme(settings["prior_label_scheme"])
     for section in ("segmentation", "prior"):
         supplied = config.get(section, {})
         if not isinstance(supplied, dict):
@@ -66,15 +81,12 @@ def prepare_case(config: dict[str, Any], *, base_dir: str | Path = ".", dry_run:
     for key in ("dataset", "id", "img"):
         if settings.get(key) is None or not str(settings[key]).strip():
             raise ConfigError(f"Single-case preparation requires '{key}'.")
-    modality_value = settings.get("modality_name", settings.get("modality name", settings.get("modality")))
-    names = {name: value for value, name in MODALITY_NAMES.items()}
-    token = str(modality_value).strip().lower()
-    try:
-        modality = names[token] if token in names else int(token)
-    except ValueError as exc:
-        raise ConfigError(f"Unknown modality {modality_value!r}. Choose from {', '.join(names)}.") from exc
-    if modality not in MODALITY_NAMES:
-        raise ConfigError(f"Unknown modality ID {modality}.")
+    modality_value = settings.get("input_modality_name", settings.get("modality_name", settings.get("modality name", settings.get("modality"))))
+    modality = _modality(modality_value)
+    target_value = settings.get("target_modality_name")
+    target_modality = modality if target_value is None else _modality(target_value)
+    cross_modality = target_modality != modality
+    suffix = f"_{MODALITY_NAMES[target_modality]}" if target_value is not None else ""
     image = resolve_path(settings["img"], base_dir, required=True)
     assert image is not None
     if not image.is_file():
@@ -87,17 +99,17 @@ def prepare_case(config: dict[str, Any], *, base_dir: str | Path = ".", dry_run:
     tasks = segmentation["ct_tasks" if modality == 0 else "mr_tasks"]
     if not isinstance(tasks, list) or len(tasks) != 2 or not all(isinstance(task, str) for task in tasks):
         raise ConfigError("Segmentation defaults must specify the organ and tissue tasks, in that order.")
-    overwrite_seg = as_bool(settings["overwrite_seg"])
+    overwrite_seg = as_bool(config.get("overwrite_seg", config.get("overwrite_segs", settings["overwrite_seg"])))
     overwrite_prior = as_bool(settings["overwrite_prior"])
     organs = _companion(image, "_seg", segmentation=True)
     tissues = _companion(image, "_seg_tissue", segmentation=True)
-    prior = _companion(image, "_prior_image")
-    semantic = _companion(image, "_prior_semantic")
+    prior = _companion(image, "_prior_image" + suffix)
+    semantic = _companion(image, "_prior_semantic" + suffix)
     target = _companion(image, "_target")
     stem = image.name[:-7] if image.name.lower().endswith(".nii.gz") else image.stem
     contour = image.with_name(f"{stem}_contour{'.nii.gz' if image.name.lower().endswith('.nii.gz') else '.nii'}")
     seg_csv = resolve_path(settings.get("seg_csv", image.with_name(f"{stem}_seg.csv")), base_dir, required=True)
-    prior_csv = resolve_path(settings.get("prior_csv", image.with_name(f"{stem}_priors.csv")), base_dir, required=True)
+    prior_csv = resolve_path(settings.get("prior_csv", image.with_name(f"{stem}_priors{suffix}.csv")), base_dir, required=True)
     companions = (organs, tissues, prior, semantic, target, contour)
     resolved = [path.resolve() for path in companions]
     if image in resolved or len(set(resolved)) != len(resolved):
@@ -113,11 +125,15 @@ def prepare_case(config: dict[str, Any], *, base_dir: str | Path = ".", dry_run:
               "prior_semantic": semantic, "target": target if generate_prior or target.is_file() else image,
               "contour": contour,
               "seg_csv": seg_csv, "prior_csv": prior_csv, "segmentation_planned": work,
-              "prior_planned": generate_prior, "modality": modality, "created_masks": [], "dry_run": dry_run}
-    logger.info("Case %s | %s | image=%s", settings["id"], MODALITY_NAMES[modality], image)
+              "prior_planned": generate_prior, "modality": target_modality, "input_modality": modality,
+              "created_masks": [], "dry_run": dry_run}
+    logger.info("Case %s | input=%s | prior=%s | image=%s", settings["id"],
+                MODALITY_NAMES[modality], MODALITY_NAMES[target_modality], image)
     logger.info("Segmentation: %d task(s) to run; priors: %s", len(work), "generate" if generate_prior else "reuse")
     if dry_run:
         return result
+    if not generate_prior:
+        logger.warning("Reusing existing priors unchanged; label-scheme and parameter changes require overwrite_prior: true.")
 
     for task, path in work:
         logger.info("Segmenting %s -> %s", task, path)
@@ -150,15 +166,20 @@ def prepare_case(config: dict[str, Any], *, base_dir: str | Path = ".", dry_run:
         mr = resolve_path(parameters.get("mr", DEFAULT_MR_PARAMETERS), base_dir, required=True)
         threshold = settings["prior"]["body_threshold"]
         logger.info("Generating image and semantic priors (original image is preserved)")
-        _prepare_volume(image, organs, tissues, image.parent, modality,
+        _prepare_volume(image, organs, tissues, image.parent, target_modality,
                         ct_parameters=ct, mr_parameters=mr,
                         min_contour_area=float(settings["prior"]["min_contour_area"]),
                         threshold=None if threshold is None else float(threshold), overwrite=overwrite_prior,
-                        output_paths=(target, prior, semantic))
+                        output_paths=(target, prior, semantic), input_modality=modality,
+                        segmentation_label_scheme=settings["segmentation_label_scheme"],
+                        prior_label_scheme=settings["prior_label_scheme"],
+                        mr_legacy_parameters=resolve_path(parameters.get("mr_legacy"), base_dir))
         if not all(path.is_file() for path in (target, prior, semantic)):
             raise RuntimeError("Prior generation did not produce all required files.")
     prior_row = {"id": str(settings["id"]), "aorta_diss": 0, "prior": csv_path(prior, prior_csv),
-                 "img": csv_path(result["target"], prior_csv), "modality": modality, "prior_semantic": csv_path(semantic, prior_csv)}
+                 # A source CT/MR is not ground truth for a different target modality.
+                 "img": "" if cross_modality else csv_path(result["target"], prior_csv),
+                 "modality": target_modality, "prior_semantic": csv_path(semantic, prior_csv)}
     _write_manifest(prior_csv, prior_row, PRIOR_COLUMNS)
     logger.info("Segmentation manifest: %s", seg_csv)
     logger.info("Prior manifest: %s", prior_csv)
@@ -176,11 +197,14 @@ def prepare_case_from_config(config_path: str | Path | None = None, *, overrides
     config, base = load_yaml(config_path) if config_path else ({}, Path.cwd())
     overrides = overrides or {}
     if "case" not in config:
-        return prepare_case({**config, **overrides}, base_dir=base, dry_run=dry_run)
+        settings = {**config, **overrides}
+        if "overwrite_segs" in overrides and "overwrite_seg" not in overrides:
+            settings["overwrite_seg"] = overrides["overwrite_segs"]
+        return prepare_case(settings, base_dir=base, dry_run=dry_run)
     entries = config["case"]
     if not isinstance(entries, list) or not entries:
         raise ConfigError("'case' must be a non-empty list of case mappings.")
-    single_fields = {"img", "id", "dataset", "modality", "modality_name", "modality name"}
+    single_fields = {"img", "id", "dataset", "modality", "modality_name", "modality name", "input_modality_name", "target_modality_name"}
     if single_fields & overrides.keys():
         raise ConfigError("CLI image/case metadata arguments are single-input only; edit the YAML case entries instead.")
     shared = {key: value for key, value in config.items() if key != "case"}
@@ -192,9 +216,11 @@ def prepare_case_from_config(config_path: str | Path | None = None, *, overrides
         # Treat the accepted modality spellings as one setting when applying
         # per-case overrides (e.g. a numeric modality overrides a shared name).
         for layer in (shared, entry, overrides):
-            for key in ("modality_name", "modality name", "modality"):
+            if "overwrite_seg" in layer or "overwrite_segs" in layer:
+                settings["overwrite_seg"] = layer.get("overwrite_seg", layer.get("overwrite_segs"))
+            for key in ("input_modality_name", "modality_name", "modality name", "modality"):
                 if key in layer:
-                    settings["modality_name"] = layer[key]
+                    settings["input_modality_name"] = layer[key]
                     break
         for section in ("segmentation", "prior", "parameters"):
             values = {}
@@ -210,19 +236,25 @@ def prepare_case_from_config(config_path: str | Path | None = None, *, overrides
     # case. A shared explicit CSV path must not silently overwrite earlier cases.
     plans = [prepare_case(settings, base_dir=base, dry_run=True) for settings in merged]
     inputs = {plan["img"].resolve() for plan in plans}
-    if len(inputs) != len(plans):
-        raise ConfigError("Each YAML case must reference a distinct input image.")
-    destinations = set()
+    if len({(plan["img"].resolve(), plan["prior"].resolve()) for plan in plans}) != len(plans):
+        raise ConfigError("Each YAML case must reference a distinct input image / target naming combination.")
+    source_modalities = {}
+    destinations = {}
     for plan in plans:
+        image = plan["img"].resolve()
+        if image in source_modalities and source_modalities[image] != plan["input_modality"]:
+            raise ConfigError(f"Conflicting input modalities for {image}.")
+        source_modalities[image] = plan["input_modality"]
         for key in ("seg", "seg_tissue", "prior", "prior_semantic", "target", "contour", "seg_csv", "prior_csv"):
             path = plan[key].resolve()
             # Reuse of priors without a processed target legitimately reads the
             # original image; it does not write to that target path.
             if key == "target" and path == plan["img"].resolve():
                 continue
-            if path in inputs or path in destinations:
+            shared = key in {"seg", "seg_tissue", "target", "contour", "seg_csv"} and destinations.get(path) == (image, key)
+            if path in inputs or (path in destinations and not shared):
                 raise ConfigError(f"Cases have overlapping input/output paths: {path}. Use distinct per-case output paths.")
-            destinations.add(path)
+            destinations[path] = (image, key)
     if dry_run:
         return plans
     results = []

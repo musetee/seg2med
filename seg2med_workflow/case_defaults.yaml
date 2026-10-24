@@ -2,6 +2,9 @@
 overwrite_seg: false
 overwrite_prior: false
 absolute_paths: true
+target_modality_name: null # null reuses input modality without a suffix; explicit targets always add one
+segmentation_label_scheme: auto # read embedded dictionary; metadata-free masks require current or legacy
+prior_label_scheme: auto # MR input: retain detected scheme; CT -> MR: current. Use legacy for old models.
 segmentation:
   ct_tasks: [total, tissue_types]
   mr_tasks: [total_mr, tissue_types_mr]

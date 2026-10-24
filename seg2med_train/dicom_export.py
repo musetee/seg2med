@@ -7,13 +7,14 @@ import numpy as np
 
 
 def save_dicom_series(array, directory, *, patient_id, label, study_uid, series_number,
-                      series_uid=None, instance_start=1):
+                      series_uid=None, instance_start=1, rescale_type="US"):
     """Write TIFF-oriented (Y, X) or (Z, Y, X) data as ordered slices.
 
     Floating values are quantized to unsigned 16-bit pixels with shared rescale
     metadata across the supplied batch. Streaming callers may reuse series_uid
     and advance instance_start. No physical geometry or source-scan metadata is
-    invented: callers currently supply normalized tensors without that context.
+    invented. Callers may supply normalized tensors or restored intensities;
+    rescale_type describes the decoded units (e.g. HU for restored CT values).
     """
     try:
         from pydicom.dataset import FileDataset, FileMetaDataset
@@ -96,7 +97,7 @@ def save_dicom_series(array, directory, *, patient_id, label, study_uid, series_
         dataset.PixelRepresentation = 0
         dataset.RescaleSlope = slope_text
         dataset.RescaleIntercept = intercept_text
-        dataset.RescaleType = "US"
+        dataset.RescaleType = rescale_type
         dataset.WindowCenter = format_number_as_ds(minimum + value_range / 2)
         dataset.WindowWidth = format_number_as_ds(max(value_range, 1.0))
         dataset.PixelData = plane.tobytes()

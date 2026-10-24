@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -11,11 +12,9 @@ import numpy as np
 
 from seg2med_workflow.config import ConfigError, as_bool, load_yaml, resolve_path
 
-from .simulator import MODALITY_SPECS, simulate_prior
+from .simulator import DEFAULT_CT_PARAMETERS, DEFAULT_MR_PARAMETERS, MODALITY_SPECS, simulate_prior
 
-PHYSIOSYNTH_ROOT = Path(__file__).resolve().parent
-DEFAULT_CT_PARAMETERS = PHYSIOSYNTH_ROOT / "params_ct.csv"
-DEFAULT_MR_PARAMETERS = PHYSIOSYNTH_ROOT / "params_mr.csv"
+logger = logging.getLogger(__name__)
 
 
 def _output_name(path: Path, suffix: str) -> str:
@@ -67,12 +66,29 @@ def _prepare_volume(
     threshold: float | None,
     overwrite: bool = True,
     output_paths: tuple[Path, Path, Path] | None = None,
+    input_modality: int | None = None,
+    segmentation_label_scheme: str = "auto",
+    prior_label_scheme: str = "auto",
+    mr_legacy_parameters: Path | None = None,
 ) -> tuple[Path, Path, Path]:
     import nibabel as nib
+    from .label_schemes import (DEFAULT_MR_LEGACY_PARAMETERS, source_anatomy,
+                                mr_output_parameters, validate_scheme)
 
+    validate_scheme(prior_label_scheme)
     image_nii = nib.load(str(image_path))
+    organ_nii = nib.load(str(seg_path))
+    input_kind = MODALITY_SPECS[modality if input_modality is None else input_modality].parameter_type
+    source_table, detected = source_anatomy(organ_nii, input_kind, segmentation_label_scheme)
+    output_scheme = "current"
+    if MODALITY_SPECS[modality].parameter_type == "mr":
+        mr_parameters, output_scheme = mr_output_parameters(
+            prior_label_scheme, detected, input_kind, current=mr_parameters,
+            legacy=mr_legacy_parameters or DEFAULT_MR_LEGACY_PARAMETERS)
+    logger.info("Anatomy labels | %s | input=%s/%s | prior=%s/%s",
+                seg_path, input_kind, detected, MODALITY_SPECS[modality].parameter_type, output_scheme)
     image = image_nii.get_fdata()
-    organs = nib.load(str(seg_path)).get_fdata()
+    organs = organ_nii.get_fdata()
     tissues = nib.load(str(tissue_path)).get_fdata()
     prior, semantic, contour = simulate_prior(
         image,
@@ -83,8 +99,10 @@ def _prepare_volume(
         mr_parameters=mr_parameters,
         body_threshold=threshold,
         min_contour_area=min_contour_area,
+        input_modality=input_modality,
+        source_anatomy=source_table,
     )
-    spec = MODALITY_SPECS[modality]
+    spec = MODALITY_SPECS[modality if input_modality is None else input_modality]
     processed_target = image * contour + spec.background * (1 - contour)
     target_path, prior_path, semantic_path = output_paths or _prior_paths(image_path, output_dir)
     contour_path = output_dir / _output_name(image_path, "_contour")
@@ -227,6 +245,9 @@ def create_priors_from_config(config_path: str | Path, *, dry_run: bool = False,
                         else float(thresholds[modality]) if modality in thresholds else None
                     ),
                     overwrite=overwrite,
+                    segmentation_label_scheme=config.get("segmentation_label_scheme", "auto"),
+                    prior_label_scheme=config.get("prior_label_scheme", "auto"),
+                    mr_legacy_parameters=resolve_path(parameters.get("mr_legacy"), config_dir),
                 )
             rows.append(
                 {
@@ -238,6 +259,9 @@ def create_priors_from_config(config_path: str | Path, *, dry_run: bool = False,
                     "prior_semantic": _csv_path(semantic, data_root, absolute=absolute_paths),
                 }
             )
+        if reused and not dry_run:
+            logger.warning("%s: %d existing priors reused unchanged; label-scheme/parameter changes require overwrite: true.",
+                           split_name, reused)
         if dry_run:
             result[str(split_name)] = {
                 "rows": len(selected), "output_dir": output_dir, "output_csv": output_csv,

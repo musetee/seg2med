@@ -15,8 +15,13 @@ def build_parser():
     parser.add_argument("--dataset", help="Dataset name recorded in the segmentation CSV.")
     parser.add_argument("--id", help="Patient/case ID.")
     parser.add_argument("--img", help="Input .nii or .nii.gz volume.")
-    parser.add_argument("--modality-name", "--modality", dest="modality_name", help="Modality name (e.g. mr_t1_gre) or integer ID.")
-    parser.add_argument("--overwrite-seg", action=argparse.BooleanOptionalAction, default=None,
+    parser.add_argument("--input-modality-name", "--modality-name", "--modality", dest="input_modality_name", help="Input modality name (e.g. mr_t1_gre) or integer ID.")
+    parser.add_argument("--target-modality-name", help="Simulated prior modality; defaults to the input modality.")
+    parser.add_argument("--segmentation-label-scheme", choices=["auto", "current", "legacy"],
+                        help="Input mask label dictionary; auto reads embedded NIfTI metadata.")
+    parser.add_argument("--prior-label-scheme", choices=["auto", "current", "legacy"],
+                        help="Output MR/model convention. Use legacy for models trained with old MR labels.")
+    parser.add_argument("--overwrite-seg", "--overwrite-segs", action=argparse.BooleanOptionalAction, default=None,
                         help="Regenerate masks; --no-overwrite-seg reuses existing masks.")
     parser.add_argument("--overwrite-prior", action=argparse.BooleanOptionalAction, default=None,
                         help="Regenerate priors; --no-overwrite-prior reuses existing priors.")
@@ -46,6 +51,8 @@ def main(argv=None):
     if args.dry_run:
         for case in result if isinstance(result, list) else [result]:
             print(f"Image: {case['img']}")
+            print(f"Modalities: input={case['input_modality']}, prior={case['modality']}")
+            print(f"Prior image: {case['prior']}")
             for task, path in case["segmentation_planned"]:
                 print(f"{task}: {case['img']} -> {path}")
             print(f"Priors: {'generate' if case['prior_planned'] else 'reuse'}")

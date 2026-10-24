@@ -18,7 +18,8 @@ VERBOSE=False
 def output_sample_results(
         inputs_batch, targets_batch, patient_ID_batch, outputs_batch,
         modality_batch_or_int, epoch, step, img_folder, npy_folder=None,
-        *, save_png=False, save_npz=False, save_dicom=False, dicom_folder=None):
+        *, save_png=False, save_npz=False, save_dicom=False, dicom_folder=None,
+        dicom_intensity=None, save_target=True):
     """Save full-precision input, target, and output TIFFs for each sample.
 
     TIFF images transpose the two in-plane tensor axes to match PNG previews.
@@ -53,6 +54,8 @@ def output_sample_results(
             "target": targets_batch[i, 0].detach().cpu().numpy(),
             "output": outputs_batch[i, 0].detach().cpu().numpy(),
         }
+        if not save_target:
+            arrays.pop("target")
         patient_id = patient_ID_batch[i]
         if save_dicom:
             study_uid = generate_uid()
@@ -97,10 +100,13 @@ def output_sample_results(
                 )
             if save_dicom:
                 print(f"Saving DICOM series for {label} of patient {patient_id} at step {step}, epoch {epoch}.")
+                dicom_array, units = (dicom_intensity(tiff_array, label, modality)
+                                      if dicom_intensity is not None else (tiff_array, "US"))
                 save_dicom_series(
-                    tiff_array, os.path.join(dicom_root, label, prefix),
+                    dicom_array, os.path.join(dicom_root, label, prefix),
                     patient_id=patient_id, label=label, study_uid=study_uid,
                     series_number={"input": 1, "output": 2, "target": 3}[label],
+                    rescale_type=units,
                 )
 
         
