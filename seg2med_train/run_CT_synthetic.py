@@ -14,11 +14,11 @@ def run(input_args=None):
     if 'convert_synthetic' in steps_conducted:
         import nrrd
         from dataprocesser.customized_transforms import HU_assignment
-        images = [r'E:\Projects\yang_proj\data\synthetic_seg\synthetic_patient.nii.gz']
-        output_folder = r'E:\Projects\yang_proj\data\synthetic_seg'
+        images = [r'/absolute/path/to/data/synthetic_seg/synthetic_patient.nii.gz']
+        output_folder = r'/absolute/path/to/data/synthetic_seg'
         mapping_csv = r'synthrad_conversion\TA2_CT_from1.csv'
-        #input_path = r'E:\Projects\chen_proj\aorta_XCAT2CT\CT_XCAT_aorta\CT_Model71_Energy90\CT_Model71_Energy90_atn_1.nrrd'
-        #output_path1 = r'E:\Projects\yang_proj\data\xcat\CT_Model71_Energy90_atn_1_seg.nrrd'
+        #input_path = r'/absolute/path/to/aorta_XCAT2CT/CT_XCAT_aorta/CT_Model71_Energy90/CT_Model71_Energy90_atn_1.nrrd'
+        #output_path1 = r'/absolute/path/to/data/xcat/CT_Model71_Energy90_atn_1_seg.nrrd'
         from tqdm import tqdm
         import nibabel as nib
         dataset_list=[]

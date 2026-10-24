@@ -23,7 +23,7 @@ except ImportError:
     from seg2med_datasets.datasets.uitm import natural_sort_key, uitm_patient_id_from_stem
 
 
-DEFAULT_DATA_ROOT = Path(os.environ.get("SEG2MED_DATA_ROOT", "F:\yang_data\seg2med_datasets"))
+DEFAULT_DATA_ROOT = Path(os.environ.get("SEG2MED_DATA_ROOT", "/absolute/path/to/seg2med_datasets"))
 DEFAULT_UITM_ROOT = DEFAULT_DATA_ROOT / "UiTM MS NMO Dataset"
 DEFAULT_IMAGES_DIR = DEFAULT_UITM_ROOT / "UITM_MS_NMO_Images"
 DEFAULT_MASKS_DIR = DEFAULT_UITM_ROOT / "UITM_MS_NMO_GroundTruth_Masks"

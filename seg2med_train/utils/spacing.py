@@ -53,8 +53,8 @@ print(resampled_volume.shape)  # Should print (1, 128, 128, 100)
 '''
 
 # python spacing.py --image ./logs/test.nii.gz --reference_image ./logs/1PC092_ct.nii.gz --mode pred
-# python spacing.py --image D:\Projects\SynthRad\logs\2023\20231110_0258_Infer_monai_pix2pix_att\saved_inference\mr\mr_Inference_valset_1.nii.gz --reference_image D:\Projects\data\Task1\pelvis\1PA010\ct.nii.gz --mode pred --axis 2
-# python spacing.py --mode pred --axis 2 --reference_image D:\Projects\data\Task1\pelvis\1PC096\ct.nii.gz --image D:\Projects\SynthRad\logs\2023\20231110_0258_Infer_monai_pix2pix_att\saved_inference\mr\pred_1PC084_pix2pixatt.nii.gz
+# python spacing.py --image /absolute/path/to/logs/2023/20231110_0258_Infer_monai_pix2pix_att/saved_inference/mr/mr_Inference_valset_1.nii.gz --reference_image /absolute/path/to/Task1/pelvis/1PA010/ct.nii.gz --mode pred --axis 2
+# python spacing.py --mode pred --axis 2 --reference_image /absolute/path/to/Task1/pelvis/1PC096/ct.nii.gz --image /absolute/path/to/logs/2023/20231110_0258_Infer_monai_pix2pix_att/saved_inference/mr/pred_1PC084_pix2pixatt.nii.gz
 if __name__ == '__main__':
     #image = r'./logs/test.nii.gz'
     #reference_image = r'./logs/1PC092_ct.nii.gz'
@@ -65,7 +65,7 @@ if __name__ == '__main__':
     parser.add_argument('--axis', default=0, type=int, help='axis to calculate gradient')
     #parser.add_argument('--mode',  default='train', help='train or test')
     args = parser.parse_args()
-    #image = r"E:\Projects\yang_proj\Task1\pelvis\1PA001\ct.nii.gz"
+    #image = r"/absolute/path/to/Task1/pelvis/1PA001/ct.nii.gz"
     image=args.image
     reference_image=args.reference_image
     axis = args.axis

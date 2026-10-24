@@ -20,7 +20,7 @@ def run(input_args=None):
     }
     if 'step1_create_data_list' in steps_conducted:
         
-        XCAT_folder = r'E:\Projects\chen_proj\aorta_XCAT2CT\CT_XCAT_aorta'
+        XCAT_folder = r'/absolute/path/to/aorta_XCAT2CT/CT_XCAT_aorta'
         images, patient_IDs = init_data_list.list_img_pID_from_XCAT_folder(XCAT_folder, saved_name=None)
         print(images)
     if 'step2_create_seg' in steps_conducted:
@@ -32,13 +32,13 @@ def run(input_args=None):
         from dataprocesser.customized_transforms import convert_xcat_to_ct_mask
         mapping_csv = r'synthrad_conversion\TA2_XCAT_CT_mask.csv'
 
-        XCAT_folder = r'E:\Projects\chen_proj\aorta_XCAT2CT\CT_XCAT_aorta'
-        output_folder = r'E:\Projects\yang_proj\data\xcat'
+        XCAT_folder = r'/absolute/path/to/aorta_XCAT2CT/CT_XCAT_aorta'
+        output_folder = r'/absolute/path/to/data/xcat'
         output_mr_csv_file = r'synthrad_conversion\XCAT_CT_dataset.csv'
         images, patient_IDs = init_data_list.list_img_pID_from_XCAT_folder(XCAT_folder, saved_name=None)
 
-        #input_path = r'E:\Projects\chen_proj\aorta_XCAT2CT\CT_XCAT_aorta\CT_Model71_Energy90\CT_Model71_Energy90_atn_1.nrrd'
-        #output_path1 = r'E:\Projects\yang_proj\data\xcat\CT_Model71_Energy90_atn_1_seg.nrrd'
+        #input_path = r'/absolute/path/to/aorta_XCAT2CT/CT_XCAT_aorta/CT_Model71_Energy90/CT_Model71_Energy90_atn_1.nrrd'
+        #output_path1 = r'/absolute/path/to/data/xcat/CT_Model71_Energy90_atn_1_seg.nrrd'
         from tqdm import tqdm
         dataset_list=[]
         step=0
@@ -70,14 +70,14 @@ def run(input_args=None):
         if mode =='combineSynthradAnishCSV':
             data1=r'/gpfs/bwfor/work/ws/hd_qf295-foo/synthrad/Task1/pelvis'
             data2=r'synthrad_conversion/healthy_dissec_helix.csv'
-            #data1=r'D:\Projects\data\synthrad\train\Task1\pelvis'
+            #data1=r'/absolute/path/to/synthrad/train/Task1/pelvis'
             #data2=r'synthrad_conversion/healthy_dissec_home.csv'
             combined_csv=r'synthrad_conversion/combined_new_home.csv'
             step1_init_data_list.combine_lists_synthrad_anish(data1, data2, combined_csv)
 
         elif mode == 'createAnikaCSV':
-            ct_dir = r'E:\Projects\yang_proj\data\anika\CT'
-            mri_dir = r'E:\Projects\yang_proj\data\anika\MR_registrated'
+            ct_dir = r'/absolute/path/to/data/anika/CT'
+            mri_dir = r'/absolute/path/to/data/anika/MR_registrated'
             ct_csv=r'synthrad_conversion/combined_anika_ct_newserver.csv'
             mr_csv=r'synthrad_conversion/combined_anika_mr_newserver.csv'
             step1_init_data_list.create_csv_Anika(ct_dir, mri_dir, ct_csv, mr_csv)
