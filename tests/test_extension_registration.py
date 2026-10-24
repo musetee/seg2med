@@ -13,6 +13,15 @@ from seg2med_train import dataloader_registry, model_selection
 from seg2med_train.utils import my_configs_yacs
 
 
+def module_level_loader(opt, paths):
+    return None
+
+
+class CallableLoader:
+    def __call__(self, opt, paths):
+        return None
+
+
 class ExtensionRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.models = dict(model_selection.MODEL_RUNNERS)
@@ -96,16 +105,35 @@ class ExtensionRegistrationTests(unittest.TestCase):
             dataloader_registry.register_dataset("image_prior_csv")(other)
 
     def test_dataset_reregistration_of_the_same_function_is_idempotent(self):
-        def load(opt, paths):
-            return None
-
+        load = module_level_loader
         dataloader_registry.register_dataset("ext_dataset")(load)
         dataloader_registry.register_dataset("ext_dataset")(load)
-        # a module reload creates a new function object with the same module and qualified name
+        # a module reload creates a new function from the same source: same module, name, file and line
         reloaded = types.FunctionType(load.__code__, load.__globals__, load.__name__)
         reloaded.__qualname__, reloaded.__module__ = load.__qualname__, load.__module__
         dataloader_registry.register_dataset("ext_dataset")(reloaded)
         self.assertIs(dataloader_registry.get_dataset_loader("ext_dataset"), reloaded)
+
+    def test_different_functions_sharing_metadata_are_not_the_same(self):
+        first, second = (lambda opt, paths: "first"), (lambda opt, paths: "second")
+        dataloader_registry.register_dataset("ext_lambda")(first)
+        with self.assertRaises(ValueError):
+            dataloader_registry.register_dataset("ext_lambda")(second)
+        self.assertIs(dataloader_registry.get_dataset_loader("ext_lambda"), first)
+        a, b = CallableLoader(), CallableLoader()
+        dataloader_registry.register_dataset("ext_callable")(a)
+        dataloader_registry.register_dataset("ext_callable")(a)
+        with self.assertRaises(ValueError):
+            dataloader_registry.register_dataset("ext_callable")(b)
+        self.assertIs(dataloader_registry.get_dataset_loader("ext_callable"), a)
+
+        def local_loader(opt, paths):
+            return None
+        twin = types.FunctionType(local_loader.__code__, local_loader.__globals__, "local_loader")
+        twin.__qualname__, twin.__module__ = local_loader.__qualname__, local_loader.__module__
+        dataloader_registry.register_dataset("ext_local")(local_loader)
+        with self.assertRaises(ValueError):  # nested functions are never treated as a reload
+            dataloader_registry.register_dataset("ext_local")(twin)
 
     def test_externally_registered_dataset_is_listed(self):
         @dataloader_registry.register_dataset("ext_dataset")

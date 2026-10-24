@@ -341,7 +341,8 @@ def add_defaults(cfg):                                         # new YAML sectio
 register_manual_case_path_key("my_mask")                       # case: entries resolve it like prior
 ```
 
-Names must be non-empty strings without whitespace. Registering the same target again is a no-op;
+Names must be non-empty strings without whitespace. Registering the same target again (the same object,
+or the same module-level function after a module reload) is a no-op;
 registering a different model or loader under an existing name (including the built-in loaders) raises
 `ValueError`, so the import order of packages cannot change which loader a configuration uses. To
 override a loader deliberately, pass `register_dataset("image_prior_csv", replace=True)`.
