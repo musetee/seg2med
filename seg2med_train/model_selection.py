@@ -14,6 +14,17 @@ MODEL_RUNNERS = {
 }
 
 
+def register_model(name, module_name, class_name):
+    """Register a model runner from another package, e.g. ``register_model("my_ddpm", "my_pkg.runner", "Runner")``.
+
+    Re-registering the same target is a no-op; a different target for an existing name is rejected.
+    """
+    target = (module_name, class_name)
+    if MODEL_RUNNERS.get(name, target) != target:
+        raise ValueError(f"Model '{name}' is already registered as {MODEL_RUNNERS[name]}.")
+    MODEL_RUNNERS[name] = target
+
+
 def available_model_names():
     return sorted(MODEL_RUNNERS)
 

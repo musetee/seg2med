@@ -9,7 +9,8 @@ DATASET_REGISTRY = {}
 def available_dataset_names():
     """Read active loader registrations without importing MONAI or PyTorch.
 
-    Dataloader.py is the active loader module used by the generation runner.
+    Dataloader.py is the active loader module used by the generation runner; loaders registered by
+    extension packages that are already imported are listed too.
     """
     source = Path(__file__).with_name("Dataloader.py")
     tree = ast.parse(source.read_text(encoding="utf-8-sig"))
@@ -27,7 +28,7 @@ def available_dataset_names():
                 and isinstance(decorator.args[0].value, str)
             ):
                 names.add(decorator.args[0].value)
-    return sorted(names)
+    return sorted(names | set(DATASET_REGISTRY))
 
 
 def get_dataset_loader(name):

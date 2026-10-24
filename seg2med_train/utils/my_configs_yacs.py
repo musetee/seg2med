@@ -2,6 +2,25 @@ import datetime
 import os
 from yacs.config import CfgNode as CN
 
+# Extension packages add their own config sections and manual-case path fields here
+# instead of editing the defaults below (see register_config_defaults).
+CONFIG_DEFAULT_HOOKS = []
+MANUAL_CASE_PATH_KEYS = ["prior", "prior_semantic", "img"]
+
+
+def register_config_defaults(hook):
+    """Register ``hook(cfg)``, called on the default config before a YAML file is merged. Usable as a decorator."""
+    if hook not in CONFIG_DEFAULT_HOOKS:
+        CONFIG_DEFAULT_HOOKS.append(hook)
+    return hook
+
+
+def register_manual_case_path_key(key):
+    """Treat ``key`` in manual ``case:`` entries as a path relative to the YAML file."""
+    if key not in MANUAL_CASE_PATH_KEYS:
+        MANUAL_CASE_PATH_KEYS.append(key)
+
+
 def init_cfg(yaml_file=None):
     cfg = CN()
     cfg.model_name='' # Unet, AttentionUnet, monai_pix2pix pix2pix WGAN DCGAN; Unet3D
@@ -261,6 +280,8 @@ def init_cfg(yaml_file=None):
     cfg.validation.y_lower_limit=0
     cfg.validation.y_upper_limit=15000
     cfg.validation.dynamic_range=[-1024., 3000.]
+    for hook in CONFIG_DEFAULT_HOOKS:
+        hook(cfg)
     if yaml_file is not None:
         # Retired logging flags are ignored so historical inference YAMLs keep
         # working without installing the removed logging dependency.
@@ -282,7 +303,7 @@ def init_cfg(yaml_file=None):
         for entry in cases:
             if not isinstance(entry, dict):
                 raise ValueError("Each case must be a mapping.")
-            for key in ("prior", "prior_semantic", "img"):
+            for key in MANUAL_CASE_PATH_KEYS:
                 if entry.get(key):
                     entry[key] = str(resolve_path(entry[key], Path(yaml_file).resolve().parent))
         for key in ("writeTensorboard", "use_tensorboard"):
