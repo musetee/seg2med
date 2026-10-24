@@ -17,6 +17,7 @@ class ExtensionRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.models = dict(model_selection.MODEL_RUNNERS)
         self.datasets = dict(dataloader_registry.DATASET_REGISTRY)
+        self.replaced = set(dataloader_registry._REPLACED)
         self.hooks = list(my_configs_yacs.CONFIG_DEFAULT_HOOKS)
         self.case_keys = list(my_configs_yacs.MANUAL_CASE_PATH_KEYS)
         module = types.ModuleType("ext_test_runner")
@@ -29,6 +30,8 @@ class ExtensionRegistrationTests(unittest.TestCase):
         model_selection.MODEL_RUNNERS.update(self.models)
         dataloader_registry.DATASET_REGISTRY.clear()
         dataloader_registry.DATASET_REGISTRY.update(self.datasets)
+        dataloader_registry._REPLACED.clear()
+        dataloader_registry._REPLACED.update(self.replaced)
         my_configs_yacs.CONFIG_DEFAULT_HOOKS[:] = self.hooks
         my_configs_yacs.MANUAL_CASE_PATH_KEYS[:] = self.case_keys
 
@@ -44,6 +47,65 @@ class ExtensionRegistrationTests(unittest.TestCase):
             model_selection.register_model("ext_model", "ext_test_runner", "Other")
         with self.assertRaises(ValueError):
             model_selection.register_model("ddpm2d_seg2med", "ext_test_runner", "Runner")
+
+    def test_invalid_model_registrations_are_rejected_without_side_effects(self):
+        before = model_selection.available_model_names()
+        for name, module, cls in ((None, "ext_test_runner", "Runner"), ("", "ext_test_runner", "Runner"),
+                                  (" ext", "ext_test_runner", "Runner"), (3, "ext_test_runner", "Runner"),
+                                  ("ext_model", "", "Runner"), ("ext_model", "ext test", "Runner"),
+                                  ("ext_model", "ext_test_runner", None), ("ext_model", "ext_test_runner", "Run ner")):
+            with self.subTest(name=name, module=module, cls=cls), self.assertRaises((TypeError, ValueError)):
+                model_selection.register_model(name, module, cls)
+        self.assertEqual(model_selection.available_model_names(), before)
+
+    def test_invalid_dataset_names_are_rejected(self):
+        before = dataloader_registry.available_dataset_names()
+        for name in (None, "", " ext", 3):
+            with self.subTest(name=name), self.assertRaises((TypeError, ValueError)):
+                dataloader_registry.register_dataset(name)
+        self.assertEqual(dataloader_registry.available_dataset_names(), before)
+
+    def test_conflicting_dataset_registration_is_rejected_unless_replace(self):
+        @dataloader_registry.register_dataset("ext_dataset")
+        def first(opt, paths):
+            return "first"
+
+        def second(opt, paths):
+            return "second"
+
+        with self.assertRaises(ValueError):
+            dataloader_registry.register_dataset("ext_dataset")(second)
+        self.assertIs(dataloader_registry.get_dataset_loader("ext_dataset"), first)
+        with self.assertRaises(ValueError):
+            dataloader_registry.register_dataset("image_prior_csv")(second)
+        dataloader_registry.register_dataset("ext_dataset", replace=True)(second)
+        self.assertIs(dataloader_registry.get_dataset_loader("ext_dataset"), second)
+
+    def test_explicit_replacement_of_a_core_loader_survives_the_core_import(self):
+        def mine(opt, paths):
+            return "mine"
+
+        dataloader_registry.register_dataset("image_prior_csv", replace=True)(mine)
+        core = types.FunctionType(mine.__code__, mine.__globals__, "load_image_prior_csv")
+        core.__module__, core.__qualname__ = "seg2med_train.Dataloader", "load_image_prior_csv"
+        dataloader_registry.register_dataset("image_prior_csv")(core)  # what importing Dataloader.py does
+        self.assertIs(dataloader_registry.get_dataset_loader("image_prior_csv"), mine)
+        other = types.FunctionType(mine.__code__, mine.__globals__, "other")
+        other.__module__, other.__qualname__ = "someone_else", "other"
+        with self.assertRaises(ValueError):
+            dataloader_registry.register_dataset("image_prior_csv")(other)
+
+    def test_dataset_reregistration_of_the_same_function_is_idempotent(self):
+        def load(opt, paths):
+            return None
+
+        dataloader_registry.register_dataset("ext_dataset")(load)
+        dataloader_registry.register_dataset("ext_dataset")(load)
+        # a module reload creates a new function object with the same module and qualified name
+        reloaded = types.FunctionType(load.__code__, load.__globals__, load.__name__)
+        reloaded.__qualname__, reloaded.__module__ = load.__qualname__, load.__module__
+        dataloader_registry.register_dataset("ext_dataset")(reloaded)
+        self.assertIs(dataloader_registry.get_dataset_loader("ext_dataset"), reloaded)
 
     def test_externally_registered_dataset_is_listed(self):
         @dataloader_registry.register_dataset("ext_dataset")
