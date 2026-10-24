@@ -1,0 +1,65 @@
+# Fresh training. For full resume set train.resume: true and ckpt_path: .../last.pt.
+# python -m seg2med_train.train --config configs\workflow\train_ddpm_synthrad_ct512.yaml
+model_name: ddpm2d_seg2med
+dataset_name: image_prior_csv
+mode: train
+GPU_ID: [0]
+ckpt_path: /absolute/path/to/logs/<run>/saved_models/last.pt
+dataset:
+  data_dir: '/absolute/path/to/seg2med_datasets'
+  train_csv: configs/workflow/datacsv/synthrad_ct/seg2med_prior_train.csv
+  val_csv: configs/workflow/datacsv/synthrad_ct/seg2med_prior_validation.csv
+  test_csv: configs/workflow/datacsv/synthrad_ct/seg2med_prior_test.csv # explicit mode: test only
+  batch_size: 2
+  val_batch_size: 2
+  num_workers: 1
+  zoom: [1.0, 1.0, 1.0]
+  resized_size: [512, 512, null]
+  div_size: [null, null, null]
+train:
+  resume: true
+  num_epochs: 200 # total target epoch, including epochs completed before resume
+  learning_rate: 0.0002
+  loss: mse
+  val_epoch_interval: 1
+  save_ckpt_interval: 10 # 0 disables periodic checkpoints; last/best are always saved
+  earlystopping_patience: 1000000 # validation checks
+  earlystopping_delta: 0.000001 # absolute minimum improvement; also scheduler threshold
+  scheduler:
+    enabled: true
+    factor: 0.5
+    patience: 5
+    min_lr: 0.0000001
+    cooldown: 0
+validation:
+  seed: 42
+  repeats: 1
+  monitor: val_patient_denoising_mse
+  preview:
+    enabled: true
+    epoch_interval: 5
+    sampler: ddim
+    num_inference_steps: 50
+    eta: 0.0
+    num_samples: 6
+    sample_ids: [] # optional slice IDs from saved_logs/validation_sampling.csv
+    seeds: [] # optional seeds in sample_ids order; otherwise derived from seed below
+    seed: 1729
+    display_range: [0.0, 1.0]
+  save_png: false # full inference only; independent of preview PNGs
+  save_npz: false
+  save_dicom: false
+ddpm:
+  num_train_timesteps: 500
+  num_inference_steps: 500 # final evaluation, independent of DDIM previews
+  prediction_type: epsilon
+  schedule: linear_beta
+  beta_start: 0.0001
+  beta_end: 0.02
+  num_channels: [64, 128, 256, 256]
+  attention_levels: [false, false, false, true]
+  num_res_units: 2
+  norm_num_groups: 32
+  num_head_channels: 32
+  noise_type: normal
+  with_conditioning: false

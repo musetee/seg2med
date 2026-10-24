@@ -1,0 +1,38 @@
+# Stage 3: construct physics-informed priors from the split catalogs.
+# python -m seg2med_workflow.create_image_priors --config configs/workflow/04_create_image_priors.yaml
+data_root: /absolute/path/to/seg2med_datasets
+modalities: all
+min_contour_area: 10000
+overwrite: false
+segmentation_label_scheme: auto # metadata-free masks need current or legacy explicitly
+prior_label_scheme: legacy # keep all MR conditioning in the old model's convention
+csv_only: false
+absolute_paths: true
+
+# Optional parameter overrides. Defaults are the existing project tables.
+# parameters:
+#   ct: ../../seg2med_physiosynth/params_ct.csv
+#   mr: ../../seg2med_physiosynth/params_mr.csv
+#   mr_legacy: ../../seg2med_physiosynth/params_mr_legacy.csv
+
+# Optional per-modality threshold overrides.
+# body_thresholds:
+#   "0": -500
+#   "1": 100
+
+splits:
+  train:
+    catalog: datacsv\seg2med_seg_train.csv
+    output_dir: seg2med_dataset
+    output_csv: datacsv\seg2med_prior_train.csv
+    write_excel: false
+  validation:
+    catalog: datacsv\seg2med_seg_validation.csv
+    output_dir: seg2med_dataset
+    output_csv: datacsv\seg2med_prior_validation.csv
+    write_excel: false
+  test:
+    catalog: datacsv\seg2med_seg_test.csv
+    output_dir: seg2med_dataset
+    output_csv: datacsv\seg2med_prior_test.csv
+    write_excel: false

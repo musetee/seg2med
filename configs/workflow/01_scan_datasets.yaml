@@ -1,0 +1,27 @@
+# Stage 1: set SEG2MED_DATA_ROOT before running this example.
+# python -m seg2med_workflow.prepare_datasets --print-list
+data_root: ${SEG2MED_DATA_ROOT}
+
+datasets:
+  - kind: synthrad
+    name: synthrad
+    root: Task1/pelvis
+    modalities: [ct, mr_t1, mr_t2]
+
+  # Generic NIfTI folders need no new Python code. Dataset-specific layouts
+  # should get their own adapter in seg2med_datasets/datasets/.
+  # - kind: generic
+  #   name: my_ct
+  #   root: my_dataset
+  #   image_glob: "**/*.nii.gz"
+  #   modality: 0
+  #   patient_id_regex: "/(?P<id>[^/]+)/[^/]+\\.nii\\.gz$"
+
+output:
+  directory: ../generated
+  catalog: seg2med_catalog.csv
+  parquet: null
+  check_paths: false
+  split:
+    enabled: false
+    prefix: seg2med_split

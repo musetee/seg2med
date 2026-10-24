@@ -1,0 +1,88 @@
+# python -m seg2med_train.train --list-models
+# python -m seg2med_train.train --config configs\cfg_tutorial\test_ddpm.yaml
+# model_name: 'AttentionUnet'
+# ckpt_path: 'logs\ckpt\241125_unet_512_epoch_144.pth'
+
+model_name: 'ddpm2d_seg2med' # ddpm2d_seg2med_multimodal
+dataset_name: image_prior_csv # or semantic_prior_csv
+ckpt_path: logs\ckpt\251020_ddpm_ct_512.pt
+GPU_ID: [0]
+mode: 'test'
+dataset:
+  data_dir: '/absolute/path/to/seg2med_datasets'
+  train_csv: configs\cfg_tutorial\datacsv\seg2med_prior_ct.csv
+  val_csv: configs\cfg_tutorial\datacsv\seg2med_prior_ct.csv
+  test_csv: configs\cfg_tutorial\datacsv\seg2med_prior_ct.csv
+  batch_size: 16
+  val_batch_size: 1
+  normalize: 'scale2000'
+  zoom: [1.0, 1.0, 1.0]
+  resized_size: [512, 512, null]
+  div_size: [null, null, null]
+  num_workers: 1
+train:
+  val_epoch_interval: 1 
+  save_ckpt_interval: 1
+  num_epochs: 100
+  learning_rate: 0.0002
+  resume: false
+  sample_range_lower: 0
+  sample_range_upper: 1
+  earlystopping_patience: 20
+  earlystopping_delta: 0.0001
+  loss: mse
+  scheduler:
+    enabled: true
+    factor: 0.5
+    patience: 5
+    min_lr: 0.0000001
+    cooldown: 0
+
+validation:
+  seed: 42
+  monitor: val_patient_denoising_mse
+  preview:
+    enabled: true
+    epoch_interval: 5
+    sampler: ddim
+    num_inference_steps: 50
+    eta: 0.0
+    num_samples: 6
+    sample_ids: []
+    seeds: []
+    seed: 1729
+    display_range: [0.0, 1.0]
+  save_png: false # Save each completed inference slice immediately.
+  save_npz: false # Save raw input/output/target arrays for each completed slice.
+  save_dicom: true # Set true to export input/output/target DICOM series.
+  evaluate_restore_transforms: True
+  x_lower_limit: -1000
+  x_upper_limit: 3000
+  manual_aorta_diss: -1
+
+ddpm:
+  num_train_timesteps: 500
+  num_inference_steps: 500
+  num_channels: (64, 128, 256, 256)
+  attention_levels: (False, False, False, True)
+  num_res_units: 2
+  norm_num_groups: 32
+  num_head_channels: 32
+  noise_type: 'normal'
+  with_conditioning: False
+
+gen:
+  type: 'AttentionUnet'
+  num_channels: (64,128,256,512)
+  strides: (2,2,2,2) 
+  act: 'RELU'
+  recon_criterion: 'MSE'
+  in_channels_G: 1
+  last_act: None
+  kernel_size: 3
+  up_kernel_size: 3
+  num_res_units: 2
+  norm: 'BATCH'
+  dropout: 0.2
+  bias: True
+  lambda_recon: 50.0

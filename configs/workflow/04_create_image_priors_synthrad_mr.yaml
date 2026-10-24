@@ -1,0 +1,35 @@
+# Stage 3: construct physics-informed priors from the split catalogs.
+# python -m seg2med_workflow.create_image_priors --config configs/workflow/04_create_image_priors_synthrad_mr.yaml
+data_root: /absolute/path/to/seg2med_datasets
+modalities: all
+min_contour_area: 10000
+overwrite: false
+csv_only: true
+absolute_paths: true
+
+# Optional parameter overrides. Defaults are the existing project tables.
+# parameters:
+#   ct: ../../seg2med_physiosynth/params_ct.csv
+#   mr: ../../seg2med_physiosynth/params_mr.csv
+
+# Optional per-modality threshold overrides.
+# body_thresholds:
+#   "0": -500
+#   "1": 100
+
+splits:
+  train:
+    catalog: datacsv\synthrad_mr\seg2med_seg_train.csv
+    output_dir: seg2med_dataset
+    output_csv: datacsv\synthrad_mr\seg2med_prior_train.csv
+    write_excel: false
+  validation:
+    catalog: datacsv\synthrad_mr\seg2med_seg_validation.csv
+    output_dir: seg2med_dataset
+    output_csv: datacsv\synthrad_mr\seg2med_prior_validation.csv
+    write_excel: false
+  test:
+    catalog: datacsv\synthrad_mr\seg2med_seg_test.csv
+    output_dir: seg2med_dataset
+    output_csv: datacsv\synthrad_mr\seg2med_prior_test.csv
+    write_excel: false

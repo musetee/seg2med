@@ -1,0 +1,50 @@
+# Stage 1: set SEG2MED_DATA_ROOT before running this example.
+# python -m seg2med_workflow.prepare_datasets --print-list
+# python -m seg2med_workflow.prepare_datasets --config configs\workflow\03_scan_seg_datasets.yaml
+data_root: /absolute/path/to/seg2med_datasets
+
+datasets:
+  - kind: synthrad
+    name: synthrad
+    root: synthrad/Task1/pelvis
+    region: pelvis
+    modalities: [ct, mr_t1, mr_t2]
+
+  - kind: anika
+    name: anika
+    ct_root: anika/CT
+    mr_root: anika/MR_registrated
+    # M2OLIE/Anika: patient_scan IDs are grouped by the shared patient number.
+    region: abdomen
+    modalities: [ct, mr_vibe_in, mr_vibe_opp, mr_vibe_dixon_tra_in, mr_vibe_dixon_tra_opp]
+
+  - kind: anish
+    name: anish
+    root: anish
+    modalities: [ct]
+
+  # Generic NIfTI folders need no new Python code. Dataset-specific layouts
+  # should get their own adapter in seg2med_datasets/datasets/.
+  # - kind: generic
+  #   name: my_ct
+  #   root: my_dataset
+  #   image_glob: "**/*.nii.gz"
+  #   modality: 0
+  #   patient_id_regex: "/(?P<id>[^/]+)/[^/]+\\.nii\\.gz$"
+
+output:
+  directory: datacsv\seg2med_dataset
+  catalog: seg2med_seg.csv
+  parquet: null
+  check_paths: false
+  split:
+    enabled: true
+    prefix: seg2med_seg
+    train_ratio: 0.70
+    validation_ratio: 0.15
+    test_ratio: 0.15
+    seed: 42
+    # Filter only split manifests; all scanned modalities remain in the catalog.
+    modalities: [ct, mr_t1_gre, mr_t2_space, mr_vibe_in, mr_vibe_opp]
+    # Existing assignments are reused. Change prefix to start a new partition.
+    patient_mapping: seg2med_seg_patient_splits.csv

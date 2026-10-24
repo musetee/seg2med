@@ -1,0 +1,44 @@
+# python -m seg2med_train.train --config configs/workflow/test_ddpm_manual.yaml
+# Match ALL ddpm/spatial settings to your checkpoint before running.
+model_name: ddpm2d_seg2med # or ddpm2d_seg2med_multimodal with matching class settings
+dataset_name: image_prior_csv
+mode: test
+GPU_ID: [0]
+ckpt_path: /path/to/your/trained_checkpoint.pt
+
+dataset:
+  # Target/generated modality, not the modality used to acquire the anatomy.
+  modality_name: ct
+  num_workers: 0
+  val_batch_size: 2
+  zoom: [1.0, 1.0, 1.0]
+  resized_size: [512, 512, null]
+  div_size: [1, 1, 1]
+  case:
+    - id: '1PA001'
+      prior: /absolute/path/to/seg2med_datasets/synthrad/tutorial/1PA001/mr_prior_image_ct.nii.gz
+    - id: '1PA004'
+      prior: /absolute/path/to/seg2med_datasets/synthrad/tutorial/1PA004/mr_prior_image_ct.nii.gz
+      # img: /path/to/optional/aligned/real_ct.nii.gz
+  # case can alternatively be at the YAML root. Paths are relative to this YAML
+  # unless absolute. CSV settings are not used when case is nonempty.
+
+validation:
+  save_dicom: true
+  save_png: false
+  save_npz: false
+
+ddpm:
+  num_train_timesteps: 500
+  num_inference_steps: 500
+  prediction_type: epsilon
+  schedule: linear_beta
+  beta_start: 0.0001
+  beta_end: 0.02
+  num_channels: [64, 128, 256, 256]
+  attention_levels: [false, false, false, true]
+  num_res_units: 2
+  norm_num_groups: 32
+  num_head_channels: 32
+  noise_type: normal
+  with_conditioning: false

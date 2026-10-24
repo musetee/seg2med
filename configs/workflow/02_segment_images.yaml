@@ -1,0 +1,19 @@
+# Stage 2: consume the catalog made by stage 1.
+source:
+  type: catalog
+  path: ../generated/seg2med_catalog.csv
+  image_column: img
+  # datasets: [synthrad_ct]
+  # modalities: [0]
+  # limit: 2
+
+tasks: [total, tissue_types]
+device: gpu
+multi_label: true
+fast: false
+overwrite: false
+continue_on_error: false
+
+# Omit output_dir to save masks next to each input image. This naming matches
+# the catalog convention: *_seg.nii.gz and *_seg_tissue.nii.gz.
+# output_dir: ${SEG2MED_DATA_ROOT}/segmentations
