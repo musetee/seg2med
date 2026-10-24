@@ -29,7 +29,7 @@ with CUDA 11.8:
 ```bash
 conda env create -f environment.yaml
 conda activate seg2med
-python -m pip install yacs pandas matplotlib scikit-learn scikit-image nibabel SimpleITK imageio
+python -m pip install -e .            # add [segmentation] to also install TotalSegmentator
 python -c "import torch; print(torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 ```
 
@@ -52,17 +52,21 @@ segmentation:
 case:
   - id: '1PA001'
     dataset: synthrad_mr_t1
-    modality_name: mr_t1_gre
+    input_modality_name: mr_t1_gre
     img: /absolute/path/to/1PA001/mr.nii.gz
   - id: '1PA004'
     dataset: synthrad_mr_t1
-    modality_name: mr_t1_gre
+    input_modality_name: mr_t1_gre
     img: /absolute/path/to/1PA004/mr.nii.gz
 ```
 
 Replace the example paths with your own; Windows paths such as
 `F:\data\1PA001\mr.nii.gz` also work. `dataset` names your source, `id` identifies
-the case, and `modality_name` selects the simulation model. Cases run sequentially.
+the case, and `input_modality_name` (formerly `modality_name`, still accepted)
+names the input scan. The prior is simulated in the same modality unless
+`target_modality_name` selects another one. `segmentation_label_scheme: auto`
+reads each mask's embedded TotalSegmentator label dictionary; `prior_label_scheme`
+chooses the label numbering written to the prior (`legacy` or `current`). Cases run sequentially.
 Top-level settings are shared; individual cases can override them. A flat YAML
 containing one case is also supported.
 
@@ -303,6 +307,39 @@ examples are not a quantitative performance evaluation.
 
 For research use. Confirm data-sharing permissions and anonymization before
 redistributing images, manifests, or model checkpoints.
+
+## Running the tests
+
+The unit tests run on the CPU with small synthetic inputs:
+
+```bash
+python -m unittest discover -s tests
+```
+
+## Extending seg2med
+
+Another package can add models, dataset loaders and configuration fields without
+editing this repository; import it before calling the train/inference entry point.
+
+```python
+from yacs.config import CfgNode as CN
+from seg2med_train.dataloader_registry import register_dataset
+from seg2med_train.model_selection import register_model
+from seg2med_train.utils.my_configs_yacs import register_config_defaults, register_manual_case_path_key
+
+register_model("my_ddpm", "my_package.runner", "MyRunner")   # selected by model_name: my_ddpm
+
+@register_dataset("my_csv")                                    # selected by dataset_name: my_csv
+def load_my_csv(opt, paths):
+    ...
+
+@register_config_defaults
+def add_defaults(cfg):                                         # new YAML section with defaults
+    cfg.my_section = CN()
+    cfg.my_section.scale = 1.0
+
+register_manual_case_path_key("my_mask")                       # case: entries resolve it like prior
+```
 
 ## License
 
